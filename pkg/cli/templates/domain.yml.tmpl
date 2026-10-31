@@ -1,0 +1,20 @@
+domain:
+  name: "default"
+  description: "Default bounded context"
+ownership:
+  team: "engineering"
+slack_channel: "#dev"
+boundaries:
+  allowed_paths:
+    - "src/**"
+  forbidden_paths:
+    - "src/core/kernel/**"
+validation:
+  test_command: "go test ./..."
+  lint_command: "go vet ./..."
+context_hints:
+  entry_points:
+    - "main.go"
+  related_databases:
+    tables: []
+  docs_references: []

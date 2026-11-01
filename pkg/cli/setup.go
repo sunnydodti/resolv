@@ -108,18 +108,21 @@ func NewSetupCmd() *cobra.Command {
 				input := strings.TrimSpace(scanner.Text())
 
 				var repo _resolv.Repo
+				var source string
 				if input != "" {
 					if r, ok := urlParseRepo(input); ok {
 						repo = r
+						source = repo.Source
 						fmt.Fprintln(cmd.OutOrStderr(), "Parsed URL -> source:", repo.Source, "base:", repo.BasePath, "repo:", repo.RepoPath)
 					} else {
 						// Treat as repo path
 						repo = _resolv.Repo{Source: "github", BasePath: "github.com", RepoPath: input}
+						source = "github"
 					}
 				} else {
 					fmt.Fprintf(cmd.OutOrStderr(), "Source (github/gitlab/other) [github]: ")
 					scanner.Scan()
-					source := strings.TrimSpace(scanner.Text())
+					source = strings.TrimSpace(scanner.Text())
 					if source == "" {
 						source = "github"
 					}
@@ -142,49 +145,19 @@ func NewSetupCmd() *cobra.Command {
 					}
 				}
 
-				// API key: show existing keys, ask for new or skip
-				selectedKey := ""
-				if len(creds) > 0 {
-					fmt.Fprintln(cmd.OutOrStderr(), "\nExisting keys:")
-					keys := make([]string, 0)
-					for k := range creds {
-						keys = append(keys, k)
-					}
-					for i, k := range keys {
-						fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
-					}
-					fmt.Fprint(cmd.OutOrStderr(), "Select number or enter new key (Enter to skip): ")
-					scanner.Scan()
-					inputKey := strings.TrimSpace(scanner.Text())
-					if inputKey != "" {
-						var num int
-						if _, err := fmt.Sscanf(inputKey, "%d", &num); err == nil && num >= 1 && num <= len(keys) {
-							selectedKey = keys[num-1]
-						} else {
-							selectedKey = inputKey
-						}
-					}
-				} else {
-					fmt.Fprint(cmd.OutOrStderr(), "API key (new or env:VAR, Enter to skip): ")
-					scanner.Scan()
-					selectedKey = strings.TrimSpace(scanner.Text())
+				// API key value only — derived key = source or domain.source
+				keyName := source
+				if domainName != "" {
+					keyName = domainName + "." + source
 				}
-
-				if selectedKey != "" {
-					if _, exists := creds[selectedKey]; !exists {
-						// If it's an env reference, store directly; else ask value
-						if strings.HasPrefix(selectedKey, "env:") {
-							creds[selectedKey] = selectedKey
-						} else {
-							fmt.Fprintf(cmd.OutOrStderr(), "Enter value for %s (raw or env:VAR): ", selectedKey)
-							scanner.Scan()
-							val := strings.TrimSpace(scanner.Text())
-							if val != "" {
-								creds[selectedKey] = val
-							}
-						}
+				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw or env:VAR, Enter to skip): ", source)
+				scanner.Scan()
+				val := strings.TrimSpace(scanner.Text())
+				if val != "" {
+					if _, exists := creds[keyName]; !exists {
+						creds[keyName] = val
 					} else {
-						fmt.Fprintf(cmd.OutOrStderr(), "Using existing %q (not overwritten)\n", selectedKey)
+						fmt.Fprintf(cmd.OutOrStderr(), "Key %q exists (not overwritten)\n", keyName)
 					}
 				}
 

@@ -37,9 +37,10 @@ type TelemetryConfig struct {
 
 // Repo represents a git repository reference.
 type Repo struct {
-	Source      string `json:"source"`
-	BasePath    string `json:"base_path"`
-	RepoPath    string `json:"repo_path"`
+	Source         string `json:"source"`
+	BasePath       string `json:"base_path"`
+	RepoPath       string `json:"repo_path"`
+	CredentialKey  string `json:"credential_key,omitempty"`
 }
 
 // DomainEntry holds the settings for a single domain.

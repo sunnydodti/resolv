@@ -22,24 +22,12 @@ func urlParseRepo(input string) (_resolv.Repo, bool) {
 	host := u.Host
 	repoPath := strings.TrimPrefix(u.Path, "/")
 	if host == "github.com" || host == "gitlab.com" || strings.Contains(host, "github") {
-		return _resolv.Repo{
-			Source:   "github",
-			BasePath: "github.com",
-			RepoPath: repoPath,
-		}, true
+		return _resolv.Repo{Source: "github", BasePath: "github.com", RepoPath: repoPath}, true
 	}
 	if host == "gitlab.com" || strings.Contains(host, "gitlab") {
-		return _resolv.Repo{
-			Source:   "gitlab",
-			BasePath: "gitlab.com",
-			RepoPath: repoPath,
-		}, true
+		return _resolv.Repo{Source: "gitlab", BasePath: "gitlab.com", RepoPath: repoPath}, true
 	}
-	return _resolv.Repo{
-		Source:   "other",
-		BasePath: input,
-		RepoPath: repoPath,
-	}, true
+	return _resolv.Repo{Source: "other", BasePath: input, RepoPath: repoPath}, true
 }
 
 func NewSetupCmd() *cobra.Command {
@@ -52,7 +40,6 @@ func NewSetupCmd() *cobra.Command {
 			if len(args) > 0 && args[0] != "" {
 				domainName = args[0]
 			}
-
 			if domainName == "" {
 				fmt.Fprint(cmd.OutOrStderr(), "Domain name: ")
 				scanner := bufio.NewScanner(os.Stdin)
@@ -88,7 +75,6 @@ func NewSetupCmd() *cobra.Command {
 				if choice == "4" || choice == "done" || choice == "" {
 					break
 				}
-
 				repoType := ""
 				switch choice {
 				case "1":
@@ -101,10 +87,6 @@ func NewSetupCmd() *cobra.Command {
 					fmt.Fprintln(cmd.OutOrStderr(), "Invalid choice. Use 1/2/3/4.")
 					continue
 				}
-
-				// ... existing URL/repo input ...
-				// (repo input kept above)
-
 
 				fmt.Fprintln(cmd.OutOrStderr(), "Paste URL (https://...) or enter repo details (Enter to skip URL):")
 				fmt.Fprint(cmd.OutOrStderr(), "Repo: ")
@@ -119,12 +101,11 @@ func NewSetupCmd() *cobra.Command {
 						source = repo.Source
 						fmt.Fprintln(cmd.OutOrStderr(), "Parsed URL -> source:", repo.Source, "base:", repo.BasePath, "repo:", repo.RepoPath)
 					} else {
-						// Treat as repo path
 						repo = _resolv.Repo{Source: "github", BasePath: "github.com", RepoPath: input}
 						source = "github"
 					}
 				} else {
-					fmt.Fprintf(cmd.OutOrStderr(), "Source (github/gitlab/other) [github]: ")
+					fmt.Fprintf(cmd.OutOrStderr(), "Source [github]: ")
 					scanner.Scan()
 					source = strings.TrimSpace(scanner.Text())
 					if source == "" {
@@ -149,54 +130,59 @@ func NewSetupCmd() *cobra.Command {
 					}
 				}
 
-				// API key — choose existing or enter new value with label
-				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, 'e' for existing): ", source)
-				scanner.Scan()
-				inputVal := strings.TrimSpace(scanner.Text())
+				// Auto-fetch source-related existing keys
+				matches := []string{}
+				prefix := source + "."
+				if domainName != "" {
+					prefix = domainName + "." + source + "."
+				}
+				for k := range creds {
+					if strings.HasPrefix(k, prefix) {
+						matches = append(matches, k)
+					}
+				}
+				if len(matches) > 0 {
+					fmt.Fprintln(cmd.OutOrStderr(), "Existing keys for source:")
+					for i, k := range matches {
+						fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
+					}
+				}
 
-				if inputVal == "e" || inputVal == "E" {
-					matches := []string{}
-					for k := range creds {
-						if (domainName == "" && strings.HasPrefix(k, source+".")) ||
-						   (domainName != "" && strings.HasPrefix(k, domainName+"."+source+".")) {
-							matches = append(matches, k)
-						}
+				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, Enter to skip, number to reuse): ", source)
+				scanner.Scan()
+				val := strings.TrimSpace(scanner.Text())
+
+				keyName := ""
+				if val == "" {
+					// Skip: use first existing or leave blank
+					if len(matches) > 0 {
+						keyName = matches[0]
 					}
-					if len(matches) == 0 {
-						fmt.Fprintln(cmd.OutOrStderr(), "No existing keys.")
+				} else {
+					// Check if selecting existing by number
+					num := 0
+					if _, err := fmt.Sscanf(val, "%d", &num); err == nil && num >= 1 && num <= len(matches) {
+						keyName = matches[num-1]
 					} else {
-						fmt.Fprintln(cmd.OutOrStderr(), "Existing keys:")
-						for i, k := range matches {
-							fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
-						}
-						fmt.Fprint(cmd.OutOrStderr(), "Select number (skip if none): ")
-						scanner.Scan()
-						line := strings.TrimSpace(scanner.Text())
-						if line != "" {
-							var n int
-							if _, err := fmt.Sscanf(line, "%d", &n); err == nil && n >= 1 && n <= len(matches) {
-								keyName := matches[n-1]
-								fmt.Fprintf(cmd.OutOrStderr(), "Using %q (not overwritten)\n", keyName)
+						// New value — auto-label with number suffix if needed
+						label := "default"
+						for i := 1; ; i++ {
+							testKey := source + "." + label
+							if domainName != "" {
+								testKey = domainName + "." + source + "." + label
 							}
+							if _, exists := creds[testKey]; !exists {
+								keyName = testKey
+								creds[keyName] = val
+								break
+							}
+							label = fmt.Sprintf("default_%d", i)
 						}
 					}
-				} else if inputVal != "" {
-					label := "default"
-					fmt.Fprintf(cmd.OutOrStderr(), "Key label [%s]: ", label)
-					scanner.Scan()
-					l := strings.TrimSpace(scanner.Text())
-					if l != "" {
-						label = l
-					}
-					keyName := source + "." + label
-					if domainName != "" {
-						keyName = domainName + "." + source + "." + label
-					}
-					if _, exists := creds[keyName]; exists {
-						fmt.Fprintf(cmd.OutOrStderr(), "Key %q already exists — choose different label\n", keyName)
-					} else {
-						creds[keyName] = inputVal
-					}
+				}
+
+				if keyName != "" {
+					repo.CredentialKey = keyName
 				}
 
 				if domainEntry.Repos == nil {

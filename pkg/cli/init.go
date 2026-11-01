@@ -21,7 +21,12 @@ func NewInitCmd() *cobra.Command {
 				return err
 			}
 
-			resolvYaml := `version: "1.0"
+			// Prompt for global token (no env assumptions)
+			fmt.Fprint(cmd.OutOrStderr(), "Enter global token (press Enter to skip): ")
+			var token string
+			fmt.Scanln(&token)
+
+			const resolvResolv = `version: "1.0"
 project:
   name: "resolv"
 execution:
@@ -32,7 +37,11 @@ telemetry:
   audit_log_path: ".resolv/audit.log"
 platforms:
   - github
+model:
+  credential_key: "%s"
 `
+			resolvYaml := fmt.Sprintf(resolvResolv, token)
+
 			domainYaml := `domain:
   repos:
     primary:

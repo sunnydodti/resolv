@@ -123,5 +123,40 @@ func SaveCredentials(creds map[string]string) error {
 	return os.Rename(tmp, filepath.Join(dir, "credentials.json"))
 }
 
+// LoadDomainEntry reads a single domain config from /domains/<name>/config.yml.
+func LoadDomainEntry(name string) (*DomainEntry, error) {
+	dir := filepath.Join(ConfigDir(), "domains", name)
+	f := filepath.Join(dir, "config.yml")
+	if _, err := os.Stat(f); os.IsNotExist(err) {
+		return &DomainEntry{Repos: map[string][]Repo{}}, nil
+	}
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return nil, fmt.Errorf("reading domain %s: %w", name, err)
+	}
+	var entry DomainEntry
+	if err := yaml.Unmarshal(data, &entry); err != nil {
+		return nil, fmt.Errorf("decoding domain %s: %w", name, err)
+	}
+	return &entry, nil
+}
+
+// SaveDomainEntry writes a single domain config atomically.
+func SaveDomainEntry(name string, entry *DomainEntry) error {
+	dir := filepath.Join(ConfigDir(), "domains", name)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "config.yml.tmp")
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "config.yml"))
+}
+
 // ensure io import used
 var _ = io.EOF

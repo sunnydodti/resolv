@@ -3,12 +3,44 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	_resolv "resolv/pkg/config"
 )
+
+func urlParseRepo(input string) (_resolv.Repo, bool) {
+	if !strings.HasPrefix(input, "https://") {
+		return _resolv.Repo{}, false
+	}
+	u, err := url.Parse(input)
+	if err != nil {
+		return _resolv.Repo{}, false
+	}
+	host := u.Host
+	repoPath := strings.TrimPrefix(u.Path, "/")
+	if host == "github.com" || host == "gitlab.com" || strings.Contains(host, "github") {
+		return _resolv.Repo{
+			Source:   "github",
+			BasePath: "github.com",
+			RepoPath: repoPath,
+		}, true
+	}
+	if host == "gitlab.com" || strings.Contains(host, "gitlab") {
+		return _resolv.Repo{
+			Source:   "gitlab",
+			BasePath: "gitlab.com",
+			RepoPath: repoPath,
+		}, true
+	}
+	return _resolv.Repo{
+		Source:   "other",
+		BasePath: input,
+		RepoPath: repoPath,
+	}, true
+}
 
 func NewSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -21,21 +53,6 @@ func NewSetupCmd() *cobra.Command {
 				domainName = args[0]
 			}
 
-			// Read existing configs (read-only at start)
-			domainCfg, err := _resolv.LoadDomainConfig()
-			if err != nil {
-				domainCfg = &_resolv.DomainConfig{Domains: map[string]_resolv.DomainEntry{}}
-			}
-			if domainCfg.Domains == nil {
-				domainCfg.Domains = map[string]_resolv.DomainEntry{}
-			}
-
-			creds, err := _resolv.LoadCredentials()
-			if err != nil {
-				creds = map[string]string{}
-			}
-
-			// Prompt domain if not given
 			if domainName == "" {
 				fmt.Fprint(cmd.OutOrStderr(), "Domain name: ")
 				scanner := bufio.NewScanner(os.Stdin)
@@ -47,89 +64,114 @@ func NewSetupCmd() *cobra.Command {
 				return fmt.Errorf("domain name required")
 			}
 
-			// Get or create domain entry
-			domainEntry, exists := domainCfg.Domains[domainName]
-			if !exists {
-				domainEntry = _resolv.DomainEntry{
-					Repos: map[string][]_resolv.Repo{},
-				}
+			domainEntry, err := _resolv.LoadDomainEntry(domainName)
+			if err != nil {
+				domainEntry = &_resolv.DomainEntry{Repos: map[string][]_resolv.Repo{}}
+			}
+			if domainEntry.Repos == nil {
+				domainEntry.Repos = map[string][]_resolv.Repo{}
 			}
 
-			// Interactive menu: add repos
+			creds, err := _resolv.LoadCredentials()
+			if err != nil {
+				creds = map[string]string{}
+			}
+
 			for {
-				fmt.Fprintln(cmd.OutOrStderr(), "\nRepo type to add (primary/reference/other, or done):")
+				fmt.Fprintln(cmd.OutOrStderr(), "\nRepo type (1=primary, 2=reference, 3=other, 4=done):")
 				fmt.Fprint(cmd.OutOrStderr(), "Choice: ")
 				scanner := bufio.NewScanner(os.Stdin)
 				if !scanner.Scan() {
 					break
 				}
-				repoType := strings.TrimSpace(scanner.Text())
-				if repoType == "done" || repoType == "" {
+				choice := strings.TrimSpace(scanner.Text())
+				if choice == "4" || choice == "done" || choice == "" {
 					break
 				}
-				if repoType != "primary" && repoType != "reference" && repoType != "other" {
-					fmt.Fprintln(cmd.OutOrStderr(), "Invalid type. Use primary/reference/other.")
+
+				repoType := ""
+				switch choice {
+				case "1":
+					repoType = "primary"
+				case "2":
+					repoType = "reference"
+				case "3":
+					repoType = "other"
+				default:
+					fmt.Fprintln(cmd.OutOrStderr(), "Invalid choice. Use 1/2/3/4.")
 					continue
 				}
 
-				fmt.Fprintf(cmd.OutOrStderr(), "Source [github]: ")
+				fmt.Fprintln(cmd.OutOrStderr(), "Paste URL (https://...) or enter repo details (Enter to skip URL):")
+				fmt.Fprint(cmd.OutOrStderr(), "Repo: ")
 				scanner.Scan()
-				source := strings.TrimSpace(scanner.Text())
-				if source == "" {
-					source = "github"
+				input := strings.TrimSpace(scanner.Text())
+
+				var repo _resolv.Repo
+				if input != "" {
+					if r, ok := urlParseRepo(input); ok {
+						repo = r
+						fmt.Fprintln(cmd.OutOrStderr(), "Parsed URL -> source:", repo.Source, "base:", repo.BasePath, "repo:", repo.RepoPath)
+					} else {
+						// Treat as repo path
+						repo = _resolv.Repo{Source: "github", BasePath: "github.com", RepoPath: input}
+					}
+				} else {
+					fmt.Fprintf(cmd.OutOrStderr(), "Source (github/gitlab/other) [github]: ")
+					scanner.Scan()
+					source := strings.TrimSpace(scanner.Text())
+					if source == "" {
+						source = "github"
+					}
+					repo.Source = source
+
+					fmt.Fprintf(cmd.OutOrStderr(), "Base path [github.com]: ")
+					scanner.Scan()
+					base := strings.TrimSpace(scanner.Text())
+					if base == "" {
+						base = "github.com"
+					}
+					repo.BasePath = base
+
+					fmt.Fprintf(cmd.OutOrStderr(), "Repo path: ")
+					scanner.Scan()
+					repo.RepoPath = strings.TrimSpace(scanner.Text())
+					if repo.RepoPath == "" {
+						fmt.Fprintln(cmd.OutOrStderr(), "Repo path required")
+						continue
+					}
 				}
 
-				fmt.Fprintf(cmd.OutOrStderr(), "Base path [github.com]: ")
-				scanner.Scan()
-				base := strings.TrimSpace(scanner.Text())
-				if base == "" {
-					base = "github.com"
-				}
-
-				fmt.Fprintf(cmd.OutOrStderr(), "Repo path: ")
-				scanner.Scan()
-				repoPath := strings.TrimSpace(scanner.Text())
-				if repoPath == "" {
-					fmt.Fprintln(cmd.OutOrStderr(), "Repo path required")
-					continue
-				}
-
-				// API key: list existing keys or ask for new name
+				// API key: show existing keys, ask for new or skip
 				selectedKey := ""
 				if len(creds) > 0 {
 					fmt.Fprintln(cmd.OutOrStderr(), "\nExisting keys:")
+					keys := make([]string, 0)
 					for k := range creds {
-						fmt.Fprintf(cmd.OutOrStderr(), "  %s\n", k)
+						keys = append(keys, k)
 					}
-					fmt.Fprintf(cmd.OutOrStderr(), "Select key number (or press Enter to enter new): ")
+					for i, k := range keys {
+						fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
+					}
+					fmt.Fprint(cmd.OutOrStderr(), "Select number or enter new key (Enter to skip): ")
 					scanner.Scan()
-					input := strings.TrimSpace(scanner.Text())
-					if input != "" {
-						var idx int
-						if _, err := fmt.Sscanf(input, "%d", &idx); err == nil && idx > 0 && idx <= len(creds) {
-							keys := make([]string, 0, len(creds))
-							for k := range creds {
-								keys = append(keys, k)
-							}
-							selectedKey = keys[idx-1]
+					inputKey := strings.TrimSpace(scanner.Text())
+					if inputKey != "" {
+						var num int
+						if _, err := fmt.Sscanf(inputKey, "%d", &num); err == nil && num >= 1 && num <= len(keys) {
+							selectedKey = keys[num-1]
 						} else {
-							selectedKey = input
+							selectedKey = inputKey
 						}
 					}
-				}
-				if selectedKey == "" {
-					fmt.Fprintf(cmd.OutOrStderr(), "Enter API key name (or env:VAR, or Enter to skip): ")
+				} else {
+					fmt.Fprint(cmd.OutOrStderr(), "API key (new or env:VAR, Enter to skip): ")
 					scanner.Scan()
-					keyInput := strings.TrimSpace(scanner.Text())
-					if keyInput != "" {
-						selectedKey = keyInput
-					}
+					selectedKey = strings.TrimSpace(scanner.Text())
 				}
 
-				// Store key if new (avoid overwrite)
 				if selectedKey != "" {
 					if _, exists := creds[selectedKey]; !exists {
-						// Ask for value only if key is new
 						fmt.Fprintf(cmd.OutOrStderr(), "Enter value for %s (raw or env:VAR): ", selectedKey)
 						scanner.Scan()
 						val := strings.TrimSpace(scanner.Text())
@@ -137,27 +179,18 @@ func NewSetupCmd() *cobra.Command {
 							creds[selectedKey] = val
 						}
 					} else {
-						fmt.Fprintf(cmd.OutOrStderr(), "Key %q already exists (not overwritten)\n", selectedKey)
+						fmt.Fprintf(cmd.OutOrStderr(), "Using existing %q (not overwritten)\n", selectedKey)
 					}
 				}
 
-				// Add repo to domain entry
-				repo := _resolv.Repo{
-					Source:   source,
-					BasePath: base,
-					RepoPath: repoPath,
-				}
 				if domainEntry.Repos == nil {
 					domainEntry.Repos = map[string][]_resolv.Repo{}
 				}
 				domainEntry.Repos[repoType] = append(domainEntry.Repos[repoType], repo)
-
 				fmt.Fprintln(cmd.OutOrStderr(), "Added.")
 			}
 
-			// Save
-			domainCfg.Domains[domainName] = domainEntry
-			if err := _resolv.SaveDomainConfig(domainCfg); err != nil {
+			if err := _resolv.SaveDomainEntry(domainName, domainEntry); err != nil {
 				return err
 			}
 			if len(creds) > 0 {
@@ -165,7 +198,6 @@ func NewSetupCmd() *cobra.Command {
 					return err
 				}
 			}
-
 			fmt.Fprintf(cmd.OutOrStderr(), "Domain %q saved.\n", domainName)
 			return nil
 		},

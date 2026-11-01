@@ -16,9 +16,7 @@ func NewInitCmd() *cobra.Command {
 		Short: "Scaffold a new Resolv workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := _resolv.ConfigDir()
-			if err := os.RemoveAll(dir); err != nil {
-				fmt.Fprintf(cmd.OutOrStderr(), "Warning: could not remove %q: %v\n", dir, err)
-			}
+			// Create directory if missing; never wipe existing files (credentials, domains)
 			if err := os.MkdirAll(dir, 0750); err != nil {
 				return err
 			}

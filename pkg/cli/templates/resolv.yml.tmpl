@@ -1,18 +1,11 @@
 version: "1.0"
 project:
   name: "resolv"
-  primary_language: "go"
-platform:
-  provider: "github"
-  base_branch: "main"
-draft_pr: true
-model:
-  provider: "openai"
-  model_name: "gpt-4o-mini"
-  credential_key: "OPENAI_API_KEY"
 execution:
   max_iterations: 4
   execution_timeout: 300
 telemetry:
   enabled: true
   audit_log_path: ".resolv/audit.log"
+platforms:
+  - github

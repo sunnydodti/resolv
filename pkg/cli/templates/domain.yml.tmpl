@@ -1,20 +1,21 @@
 domain:
   name: "default"
-  description: "Default bounded context"
-ownership:
-  team: "engineering"
-slack_channel: "#dev"
-boundaries:
-  allowed_paths:
-    - "src/**"
-  forbidden_paths:
-    - "src/core/kernel/**"
-validation:
-  test_command: "go test ./..."
-  lint_command: "go vet ./..."
-context_hints:
-  entry_points:
-    - "main.go"
-  related_databases:
-    tables: []
-  docs_references: []
+blocks:
+  - type: "primary"
+    access: "write"
+      repos:
+        - source: "github"
+          base_path: "github.com"
+          repo_path: "org/repo"
+  - type: "reference"
+    access: "readonly"
+      repos:
+        - source: "gitlab"
+          base_path: "gitlab.com"
+          repo_path: "group/project"
+  - type: "other"
+    access: "readonly"
+      repos:
+        - source: "self-hosted"
+          base_path: "https://git.mycompany.com"
+          repo_path: "team/repo"

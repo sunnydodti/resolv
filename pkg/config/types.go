@@ -1,36 +1,48 @@
 package config
 
-import "time"
-
 type GlobalConfig struct {
-	Version   string       `yaml:"version" json:"version"`
-	Model     ModelConfig  `yaml:"model" json:"model"`
-	Execution ExecutionConfig `yaml:"execution" json:"execution"`
-	Telemetry TelemetryConfig `yaml:"telemetry" json:"telemetry"`
+	Version   string `json:"version"`
+	Model     ModelConfig `json:"model"`
+	Execution ExecutionConfig `json:"execution"`
+	Telemetry TelemetryConfig `json:"telemetry"`
+	Platforms []string      `json:"platforms,omitempty"`
 }
 
 type ModelConfig struct {
-	Provider        string  `yaml:"provider" json:"provider"`
-	ModelName       string  `yaml:"model_name" json:"model_name"`
-	Endpoint        string  `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Timeout         int     `yaml:"timeout" json:"timeout"`
-	MaxTokens       int     `yaml:"max_tokens" json:"max_tokens"`
-	Temperature     float32 `yaml:"temperature" json:"temperature"`
-	CredentialKey   string  `yaml:"credential_key" json:"credential_key"`
+	Provider        string `json:"provider"`
+	ModelName       string `json:"model_name"`
+	Endpoint        string `json:"endpoint,omitempty"`
+	Timeout         int    `json:"timeout"`
+	MaxTokens       int    `json:"max_tokens"`
+	Temperature     float32 `json:"temperature"`
+	CredentialKey   string `json:"credential_key"`
 }
 
 type ExecutionConfig struct {
-	MaxIterations      int      `yaml:"max_iterations" json:"max_iterations"`
-	Interactive        bool     `yaml:"interactive" json:"interactive"`
-	AllowedDirectories []string `yaml:"allowed_directories" json:"allowed_directories"`
-	DenyPatterns       []string `yaml:"deny_patterns" json:"deny_patterns"`
-	ExecutionTimeout   time.Duration `yaml:"execution_timeout" json:"execution_timeout"`
-	AutoCommit         bool     `yaml:"auto_commit" json:"auto_commit"`
+	MaxIterations      int `json:"max_iterations"`
+	Interactive        bool `json:"interactive"`
+	AllowedDirectories []string `json:"allowed_directories"`
+	DenyPatterns       []string `json:"deny_patterns"`
+	ExecutionTimeout   int `json:"execution_timeout"`
+	AutoCommit         bool `json:"auto_commit"`
 }
 
 type TelemetryConfig struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	ExporterHost string   `yaml:"exporter_host,omitempty" json:"exporter_host,omitempty"`
-	SampleRate   float64  `yaml:"sample_rate" json:"sample_rate"`
-	AuditLogPath string   `yaml:"audit_log_path" json:"audit_log_path"`
+	Enabled      bool     `json:"enabled"`
+	ExporterHost string   `json:"exporter_host,omitempty"`
+	SampleRate   float64  `json:"sample_rate"`
+	AuditLogPath string   `json:"audit_log_path"`
+}
+
+// Repo represents a git repository reference.
+type Repo struct {
+	Source      string `json:"source"`
+	BasePath    string `json:"base_path"`
+	RepoPath    string `json:"repo_path"`
+}
+
+// DomainConfig holds the domain settings.
+type DomainConfig struct {
+	DomainName string `json:"domain_name"`
+	Repos      map[string][]Repo `json:"repos"`
 }

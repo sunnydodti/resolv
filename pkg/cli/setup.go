@@ -144,7 +144,15 @@ func NewSetupCmd() *cobra.Command {
 				if len(matches) > 0 {
 					fmt.Fprintln(cmd.OutOrStderr(), "Existing keys for source:")
 					for i, k := range matches {
-						fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
+						hint := ""
+					if v, ok := creds[k]; ok {
+						if strings.HasPrefix(v, "env:") {
+							hint = " (env)"
+						} else {
+							hint = " (masked)"
+						}
+					}
+					fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s%s\n", i+1, k, hint)
 					}
 				}
 

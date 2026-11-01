@@ -133,9 +133,6 @@ func NewSetupCmd() *cobra.Command {
 				// Auto-fetch source-related existing keys
 				matches := []string{}
 				prefix := source + "."
-				if domainName != "" {
-					prefix = domainName + "." + source + "."
-				}
 				for k := range creds {
 					if strings.HasPrefix(k, prefix) {
 						matches = append(matches, k)

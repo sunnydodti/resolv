@@ -155,8 +155,28 @@ func NewSetupCmd() *cobra.Command {
 
 				keyName := ""
 				if len(matches) == 1 {
-				keyName := matches[0]
-				fmt.Fprintf(cmd.OutOrStderr(), "Using existing %q (not overwritten)\n", keyName)
+				fmt.Fprintf(cmd.OutOrStderr(), "Existing key: %s (Enter to reuse, or enter new value): ", matches[0])
+				scanner.Scan()
+				val := strings.TrimSpace(scanner.Text())
+				if val == "" || val == "1" {
+					keyName = matches[0]
+				} else {
+					num := 0
+					if _, err := fmt.Sscanf(val, "%d", &num); err == nil && num == 1 {
+						keyName = matches[0]
+					} else {
+						label := "default"
+						for i := 1; ; i++ {
+							testKey := source + "." + label
+							if _, exists := creds[testKey]; !exists {
+								keyName = testKey
+								creds[keyName] = val
+								break
+							}
+							label = fmt.Sprintf("default_%d", i)
+						}
+					}
+				}
 			} else if len(matches) > 1 {
 				fmt.Fprintf(cmd.OutOrStderr(), "Multiple existing keys for %s:\n", source)
 				for i, k := range matches {

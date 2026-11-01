@@ -149,29 +149,53 @@ func NewSetupCmd() *cobra.Command {
 					}
 				}
 
-				// API key value + label (allows multiple per source)
-				keyName := source + ".default"
-				if domainName != "" {
-					keyName = domainName + "." + source + ".default"
-				}
-				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw or env:VAR, Enter to skip): ", source)
+				// API key — choose existing or enter new value with label
+				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, 'e' for existing): ", source)
 				scanner.Scan()
-				val := strings.TrimSpace(scanner.Text())
-				if val != "" {
-					fmt.Fprintf(cmd.OutOrStderr(), "Key label [%s]: ", "default")
-					scanner.Scan()
-					label := strings.TrimSpace(scanner.Text())
-					if label == "" {
-						label = "default"
+				inputVal := strings.TrimSpace(scanner.Text())
+
+				if inputVal == "e" || inputVal == "E" {
+					matches := []string{}
+					for k := range creds {
+						if (domainName == "" && strings.HasPrefix(k, source+".")) ||
+						   (domainName != "" && strings.HasPrefix(k, domainName+"."+source+".")) {
+							matches = append(matches, k)
+						}
 					}
-					keyName = source + "." + label
+					if len(matches) == 0 {
+						fmt.Fprintln(cmd.OutOrStderr(), "No existing keys.")
+					} else {
+						fmt.Fprintln(cmd.OutOrStderr(), "Existing keys:")
+						for i, k := range matches {
+							fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s\n", i+1, k)
+						}
+						fmt.Fprint(cmd.OutOrStderr(), "Select number (skip if none): ")
+						scanner.Scan()
+						line := strings.TrimSpace(scanner.Text())
+						if line != "" {
+							var n int
+							if _, err := fmt.Sscanf(line, "%d", &n); err == nil && n >= 1 && n <= len(matches) {
+								keyName := matches[n-1]
+								fmt.Fprintf(cmd.OutOrStderr(), "Using %q (not overwritten)\n", keyName)
+							}
+						}
+					}
+				} else if inputVal != "" {
+					label := "default"
+					fmt.Fprintf(cmd.OutOrStderr(), "Key label [%s]: ", label)
+					scanner.Scan()
+					l := strings.TrimSpace(scanner.Text())
+					if l != "" {
+						label = l
+					}
+					keyName := source + "." + label
 					if domainName != "" {
 						keyName = domainName + "." + source + "." + label
 					}
-					if _, exists := creds[keyName]; !exists {
-						creds[keyName] = val
+					if _, exists := creds[keyName]; exists {
+						fmt.Fprintf(cmd.OutOrStderr(), "Key %q already exists — choose different label\n", keyName)
 					} else {
-						fmt.Fprintf(cmd.OutOrStderr(), "Key %q exists (not overwritten)\n", keyName)
+						creds[keyName] = inputVal
 					}
 				}
 

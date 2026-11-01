@@ -19,3 +19,5 @@ This folder contains the finalized high‑level design decisions and a minimal s
 ## Notes
 - All design is captured in `finalizations.md`; no code is provided here yet.
 - The plan is to keep dependencies ≤6, no cgo, no frameworks, no DB, no TUI.
+
+  Continue  opencode -s ses_e6e1f6365ffeccIgnf7J1ZVk85

@@ -6,6 +6,7 @@ type GlobalConfig struct {
 	Execution ExecutionConfig `json:"execution"`
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Platforms []string      `json:"platforms,omitempty"`
+	Tokens    map[string][]string `json:"tokens,omitempty"`
 }
 
 type ModelConfig struct {

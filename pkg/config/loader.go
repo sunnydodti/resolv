@@ -1,9 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ConfigDir returns the directory where Resolv stores its configuration.
@@ -20,24 +24,104 @@ func ConfigDir() string {
 	return filepath.Join(home, ".resolv")
 }
 
-// LoadGlobalConfig reads the global configuration from the config directory.
+// LoadGlobalConfig reads and decodes the global configuration from the config directory.
 func LoadGlobalConfig() (*GlobalConfig, error) {
 	path := filepath.Join(ConfigDir(), "resolv.yml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, fmt.Errorf("reading global config: %w", err)
 	}
-	_ = data
-	return &GlobalConfig{}, nil
+	var cfg GlobalConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("decoding global config: %w", err)
+	}
+	return &cfg, nil
 }
 
-// LoadDomainConfig reads the domain configuration from the config directory.
+// SaveGlobalConfig writes the global configuration atomically.
+func SaveGlobalConfig(cfg *GlobalConfig) error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "resolv.yml.tmp")
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "resolv.yml"))
+}
+
+// LoadDomainConfig reads and decodes the domain configuration from the config directory.
 func LoadDomainConfig() (*DomainConfig, error) {
 	path := filepath.Join(ConfigDir(), "domain.yml")
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &DomainConfig{}, nil
+		}
 		return nil, fmt.Errorf("reading domain config: %w", err)
 	}
-	_ = data
-	return &DomainConfig{}, nil
+	var cfg DomainConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("decoding domain config: %w", err)
+	}
+	return &cfg, nil
 }
+
+// SaveDomainConfig writes the domain configuration atomically.
+func SaveDomainConfig(cfg *DomainConfig) error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "domain.yml.tmp")
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "domain.yml"))
+}
+
+// LoadCredentials reads the credentials JSON file if present.
+func LoadCredentials() (map[string]string, error) {
+	path := filepath.Join(ConfigDir(), "credentials.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("reading credentials: %w", err)
+	}
+	var creds map[string]string
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return nil, fmt.Errorf("decoding credentials: %w", err)
+	}
+	return creds, nil
+}
+
+// SaveCredentials writes credentials JSON atomically with restricted perms.
+func SaveCredentials(creds map[string]string) error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "credentials.json.tmp")
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "credentials.json"))
+}
+
+// ensure io import used
+var _ = io.EOF

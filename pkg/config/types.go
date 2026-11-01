@@ -42,8 +42,13 @@ type Repo struct {
 	RepoPath    string `json:"repo_path"`
 }
 
-// DomainConfig holds the domain settings.
+// DomainEntry holds the settings for a single domain.
+type DomainEntry struct {
+	Repos  map[string][]Repo   `json:"repos"`   // key: repo type (primary/reference/other)
+	Tokens map[string][]string `json:"tokens,omitempty"`
+}
+
+// DomainConfig holds all domains in domain.yml.
 type DomainConfig struct {
-	DomainName string `json:"domain_name"`
-	Repos      map[string][]Repo `json:"repos"`
+	Domains map[string]DomainEntry `json:"domains"`
 }

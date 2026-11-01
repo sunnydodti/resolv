@@ -172,11 +172,16 @@ func NewSetupCmd() *cobra.Command {
 
 				if selectedKey != "" {
 					if _, exists := creds[selectedKey]; !exists {
-						fmt.Fprintf(cmd.OutOrStderr(), "Enter value for %s (raw or env:VAR): ", selectedKey)
-						scanner.Scan()
-						val := strings.TrimSpace(scanner.Text())
-						if val != "" {
-							creds[selectedKey] = val
+						// If it's an env reference, store directly; else ask value
+						if strings.HasPrefix(selectedKey, "env:") {
+							creds[selectedKey] = selectedKey
+						} else {
+							fmt.Fprintf(cmd.OutOrStderr(), "Enter value for %s (raw or env:VAR): ", selectedKey)
+							scanner.Scan()
+							val := strings.TrimSpace(scanner.Text())
+							if val != "" {
+								creds[selectedKey] = val
+							}
 						}
 					} else {
 						fmt.Fprintf(cmd.OutOrStderr(), "Using existing %q (not overwritten)\n", selectedKey)

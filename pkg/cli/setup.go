@@ -153,29 +153,32 @@ func NewSetupCmd() *cobra.Command {
 					}
 				}
 
-				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, Enter to skip, number to reuse): ", source)
+				keyName := ""
+				if len(matches) == 1 {
+				keyName := matches[0]
+				fmt.Fprintf(cmd.OutOrStderr(), "Using existing %q (not overwritten)\n", keyName)
+			} else if len(matches) > 1 {
+				fmt.Fprintf(cmd.OutOrStderr(), "Multiple existing keys for %s:\n", source)
+				for i, k := range matches {
+					hint := " (env)"
+					if v, ok := creds[k]; ok && !strings.HasPrefix(v, "env:") {
+						hint = " (masked)"
+					}
+					fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s%s\n", i+1, k, hint)
+				}
+				fmt.Fprintf(cmd.OutOrStderr(), "Select number or enter new value (Enter to skip): ")
 				scanner.Scan()
 				val := strings.TrimSpace(scanner.Text())
-
-				keyName := ""
 				if val == "" {
-					// Skip: use first existing or leave blank
-					if len(matches) > 0 {
-						keyName = matches[0]
-					}
+					keyName = matches[0]
 				} else {
-					// Check if selecting existing by number
 					num := 0
 					if _, err := fmt.Sscanf(val, "%d", &num); err == nil && num >= 1 && num <= len(matches) {
 						keyName = matches[num-1]
 					} else {
-						// New value — auto-label with number suffix if needed
 						label := "default"
 						for i := 1; ; i++ {
 							testKey := source + "." + label
-							if domainName != "" {
-								testKey = domainName + "." + source + "." + label
-							}
 							if _, exists := creds[testKey]; !exists {
 								keyName = testKey
 								creds[keyName] = val
@@ -185,6 +188,23 @@ func NewSetupCmd() *cobra.Command {
 						}
 					}
 				}
+			} else {
+				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, Enter to skip): ", source)
+				scanner.Scan()
+				val := strings.TrimSpace(scanner.Text())
+				if val != "" {
+					label := "default"
+					for i := 1; ; i++ {
+						testKey := source + "." + label
+						if _, exists := creds[testKey]; !exists {
+							keyName = testKey
+							creds[keyName] = val
+							break
+						}
+						label = fmt.Sprintf("default_%d", i)
+					}
+				}
+			}
 
 				if keyName != "" {
 					repo.CredentialKey = keyName

@@ -102,6 +102,10 @@ func NewSetupCmd() *cobra.Command {
 					continue
 				}
 
+				// ... existing URL/repo input ...
+				// (repo input kept above)
+
+
 				fmt.Fprintln(cmd.OutOrStderr(), "Paste URL (https://...) or enter repo details (Enter to skip URL):")
 				fmt.Fprint(cmd.OutOrStderr(), "Repo: ")
 				scanner.Scan()
@@ -145,15 +149,25 @@ func NewSetupCmd() *cobra.Command {
 					}
 				}
 
-				// API key value only — derived key = source or domain.source
-				keyName := source
+				// API key value + label (allows multiple per source)
+				keyName := source + ".default"
 				if domainName != "" {
-					keyName = domainName + "." + source
+					keyName = domainName + "." + source + ".default"
 				}
 				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw or env:VAR, Enter to skip): ", source)
 				scanner.Scan()
 				val := strings.TrimSpace(scanner.Text())
 				if val != "" {
+					fmt.Fprintf(cmd.OutOrStderr(), "Key label [%s]: ", "default")
+					scanner.Scan()
+					label := strings.TrimSpace(scanner.Text())
+					if label == "" {
+						label = "default"
+					}
+					keyName = source + "." + label
+					if domainName != "" {
+						keyName = domainName + "." + source + "." + label
+					}
 					if _, exists := creds[keyName]; !exists {
 						creds[keyName] = val
 					} else {

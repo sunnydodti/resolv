@@ -134,7 +134,7 @@ func NewSetupCmd() *cobra.Command {
 				matches := []string{}
 				prefix := source + "."
 				for k := range creds {
-					if strings.HasPrefix(k, prefix) {
+					if k == source || strings.HasPrefix(k, prefix) {
 						matches = append(matches, k)
 					}
 				}

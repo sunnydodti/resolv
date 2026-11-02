@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Client struct {
@@ -93,8 +96,6 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 }
 
 func ResolveCredential(key string) (string, error) {
-	// Resolve env: prefix using existing resolver logic
-	// For simplicity, direct lookup if key starts with env:
 	if len(key) > 4 && key[:4] == "env:" {
 		varName := key[4:]
 		val := os.Getenv(varName)
@@ -104,4 +105,35 @@ func ResolveCredential(key string) (string, error) {
 		return val, nil
 	}
 	return key, nil
+}
+
+func LoadConfig() (*Client, error) {
+	data, err := os.ReadFile(".resolv/resolv.yml")
+	if err != nil {
+		return nil, fmt.Errorf("no resolv.yml found: %w", err)
+	}
+	var cfg struct {
+		Project struct {
+			Endpoint string `yaml:"endpoint"`
+			Model    string `yaml:"model"`
+		} `yaml:"project"`
+	}
+	_ = yaml.Unmarshal(data, &cfg)
+	apiKey := ""
+	b, err := os.ReadFile(".resolv/credentials.json")
+	if err == nil {
+		var creds map[string]string
+		_ = json.Unmarshal(b, &creds)
+		for k, v := range creds {
+			if strings.Contains(k, "openrouter") || strings.Contains(k, "openai") {
+				apiKey = v
+				break
+			}
+		}
+	}
+	if apiKey == "" && os.Getenv("OPENROUTER_API_KEY") != "" {
+		apiKey = os.Getenv("OPENROUTER_API_KEY")
+	}
+	c := NewClient(cfg.Project.Endpoint, cfg.Project.Model, apiKey)
+	return c, nil
 }

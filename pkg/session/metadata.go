@@ -16,11 +16,21 @@ type Metadata struct {
 }
 
 func Dir(domain, repo, issue string) string {
-	return filepath.Join(".resolv", "sessions", fmt.Sprintf("%s_%s_%s", domain, repo, issue))
+	configDir := ".resolv"
+	if _, err := os.Stat(".resolv/resolv.yml"); err != nil {
+		if home, err := os.UserHomeDir(); err == nil {
+			configDir = filepath.Join(home, ".resolv")
+		}
+	}
+	return filepath.Join(configDir, "sessions", fmt.Sprintf("%s_%s_%s", domain, repo, issue))
 }
 
 func SaveMetadata(dir string, m Metadata) error {
-	b, _ := json.Marshal(m)
+	os.MkdirAll(dir, 0750)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0644)
 }
 

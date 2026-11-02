@@ -138,44 +138,57 @@ func NewSetupCmd() *cobra.Command {
 						matches = append(matches, k)
 					}
 				}
+				keyName := ""
 				if len(matches) > 0 {
 					fmt.Fprintln(cmd.OutOrStderr(), "Existing keys for source:")
 					for i, k := range matches {
-						hint := ""
-					if v, ok := creds[k]; ok {
-						if strings.HasPrefix(v, "env:") {
-							hint = " (env)"
+						valStr := ""
+						if v, ok := creds[k]; ok {
+							if strings.HasPrefix(v, "env:") {
+								valStr = v
+							} else {
+								valStr = "***"
+							}
+						}
+						fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s:%s\n", i+1, k, valStr)
+					}
+					fmt.Fprintf(cmd.OutOrStderr(), "Select number, raw/env key, or press Enter to reuse first: ")
+					scanner.Scan()
+					val := strings.TrimSpace(scanner.Text())
+					if val == "" {
+						keyName = matches[0]
+					} else {
+						num := 0
+						if _, err := fmt.Sscanf(val, "%d", &num); err == nil && num >= 1 && num <= len(matches) {
+							keyName = matches[num-1]
 						} else {
-							hint = " (masked)"
+							exact := false
+							for _, k := range matches {
+								if k == val || strings.HasPrefix(k, val) {
+									keyName = k
+									exact = true
+									break
+								}
+							}
+							if !exact {
+								label := "default"
+								for i := 1; ; i++ {
+									testKey := source + "." + label
+									if _, exists := creds[testKey]; !exists {
+										keyName = testKey
+										creds[keyName] = val
+										break
+									}
+									label = fmt.Sprintf("default_%d", i)
+								}
+							}
 						}
 					}
-					fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s%s\n", i+1, k, hint)
-					}
-				}
-
-				keyName := ""
-				if len(matches) == 1 {
-					keyName = matches[0]
-					fmt.Fprintf(cmd.OutOrStderr(), "Using existing key %q (not overwritten)\n", keyName)
-				} else if len(matches) > 1 {
-				fmt.Fprintf(cmd.OutOrStderr(), "Multiple existing keys for %s:\n", source)
-				for i, k := range matches {
-					hint := " (env)"
-					if v, ok := creds[k]; ok && !strings.HasPrefix(v, "env:") {
-						hint = " (masked)"
-					}
-					fmt.Fprintf(cmd.OutOrStderr(), "  %d) %s%s\n", i+1, k, hint)
-				}
-				fmt.Fprintf(cmd.OutOrStderr(), "Select number or enter new value (Enter to skip): ")
-				scanner.Scan()
-				val := strings.TrimSpace(scanner.Text())
-				if val == "" {
-					keyName = matches[0]
 				} else {
-					num := 0
-					if _, err := fmt.Sscanf(val, "%d", &num); err == nil && num >= 1 && num <= len(matches) {
-						keyName = matches[num-1]
-					} else {
+					fmt.Fprintf(cmd.OutOrStderr(), "New value (raw/env): ")
+					scanner.Scan()
+					val := strings.TrimSpace(scanner.Text())
+					if val != "" {
 						label := "default"
 						for i := 1; ; i++ {
 							testKey := source + "." + label
@@ -188,23 +201,6 @@ func NewSetupCmd() *cobra.Command {
 						}
 					}
 				}
-			} else {
-				fmt.Fprintf(cmd.OutOrStderr(), "API key for %s (raw/env, Enter to skip): ", source)
-				scanner.Scan()
-				val := strings.TrimSpace(scanner.Text())
-				if val != "" {
-					label := "default"
-					for i := 1; ; i++ {
-						testKey := source + "." + label
-						if _, exists := creds[testKey]; !exists {
-							keyName = testKey
-							creds[keyName] = val
-							break
-						}
-						label = fmt.Sprintf("default_%d", i)
-					}
-				}
-			}
 
 				if keyName != "" {
 					repo.CredentialKey = keyName

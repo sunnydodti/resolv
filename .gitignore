@@ -1,0 +1,9 @@
+/resolv.exe
+/resolv.exe~
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/

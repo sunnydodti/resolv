@@ -41,6 +41,9 @@ type Repo struct {
 	BasePath       string `json:"base_path"`
 	RepoPath       string `json:"repo_path"`
 	CredentialKey  string `json:"credential_key,omitempty"`
+	BuildCmd       string `json:"build_cmd,omitempty"`
+	TestCmd        string `json:"test_cmd,omitempty"`
+	LintCmd        string `json:"lint_cmd,omitempty"`
 }
 
 // DomainEntry holds the settings for a single domain.

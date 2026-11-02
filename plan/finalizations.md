@@ -13,9 +13,28 @@
 - One primary RW repo + N reference RO repos (cloned shallowly, never push).
 - Platform adapters: **GitHub** + **local dir** only; GitLab/Bitbucket deferred.
 
+## Execution & Exhaustion Flow (updated)
+
+1. **Analyze** — issue read + `git grep` context → LLM root-cause.
+2. **Plan** — LLM proposes edit (`kind:"edit"`).
+3. **Apply** — guard path/glob → `git apply --3way`; if fails, refuse / abort.
+4. **Build / Test** — user-configured `build_cmd` / `test_cmd` from repo config; pass → Review; fail → loop back to **Apply** (re-patch).
+5. **Review** — validate result; pass → Publish; fail & turns < max → loop back to **Apply**; fail & turns >= max → **Exhaustion Protocol**.
+6. **Publish** — `resolv-<id>` branch → push → draft PR (`POST /repos/.../pulls`).
+7. **Record** — append `.resolv/runs/<id>/state.json` (after each phase) + `audit.jsonl` finalized after PR.
+
+### Budget & Exhaustion Protocol
+When `max_healing_turns` reached or token/cost wall-clock cap exceeded:
+- **Staging**: stage all current work (partial fix, new tests, docs) to `resolv-<id>` branch.
+- **Draft PR**: open PR with `Unresolved / Issue Gaps` section (failure traces, attempted fixes, human action items).
+- **Audit**: append `UNRESOLVED_DRAFT_PR_CREATED` to audit log.
+- **Exit**: clean exit with warning state (no crash).
+
 ## Autonomy
-- **Draft PR** default; `--dry-run` / comment‑only modes explicit.
+- **Draft PR** default; `--dry-run` / comment-only modes explicit.
 - Human gate before merge.
+- Self-healing loop: Apply → Build/Test → Review → (fail) → Apply.
+- No auto-merge, no post-PR CI loop (deferred).
 
 ## LLM Egress
 - OpenAI‑compatible HTTP client (`/v1/chat/completions`) only in v1.

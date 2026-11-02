@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -108,7 +109,14 @@ func ResolveCredential(key string) (string, error) {
 }
 
 func LoadConfig() (*Client, error) {
-	data, err := os.ReadFile(".resolv/resolv.yml")
+	configDir := os.Getenv("RESOLV_CONFIG_DIR")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			configDir = filepath.Join(home, ".resolv")
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "resolv.yml"))
 	if err != nil {
 		return nil, fmt.Errorf("no resolv.yml found: %w", err)
 	}
@@ -120,7 +128,7 @@ func LoadConfig() (*Client, error) {
 	}
 	_ = yaml.Unmarshal(data, &cfg)
 	apiKey := ""
-	b, err := os.ReadFile(".resolv/credentials.json")
+	b, err := os.ReadFile(filepath.Join(configDir, "credentials.json"))
 	if err == nil {
 		var creds map[string]string
 		_ = json.Unmarshal(b, &creds)

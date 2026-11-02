@@ -1,14 +1,27 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
+	"resolv/pkg/pipeline"
+)
 
 func NewPipelineCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "resolv [issue_reference]",
+		Use:   "pipeline [issue_reference]",
 		Short: "Run the autonomous resolution pipeline",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			cmd.Println("Pipeline: not yet wired (needs phase/agent wiring)")
+			issue := ""
+			if len(args) > 0 { issue = args[0] }
+			domain, _ := cmd.Flags().GetString("domain")
+			analysisOnly, _ := cmd.Flags().GetBool("analysis-only")
+			resume, _ := cmd.Flags().GetBool("resume")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			verbose, _ := cmd.Flags().GetBool("verbose")
+			maxTurns, _ := cmd.Flags().GetInt("max-healing-turns")
+			_ = analysisOnly
+			fsm := pipeline.FSM{}
+			_ = fsm.Run(issue, domain, resume, dryRun, verbose, maxTurns)
 		},
 	}
 	cmd.Flags().String("domain", "", "CSV domain list")

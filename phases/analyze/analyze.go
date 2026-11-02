@@ -1,3 +1,5 @@
 package phases
 
-func Analyze() error { return nil }
+func Analyze() error {
+	return nil
+}

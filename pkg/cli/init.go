@@ -21,8 +21,8 @@ func NewInitCmd() *cobra.Command {
 				return err
 			}
 
+			var token, endpoint, model string
 			fmt.Fprint(cmd.OutOrStderr(), "Enter github token or env:GITHUB_TOKEN (Enter to skip): ")
-			var token string
 			fmt.Scanln(&token)
 
 			creds := map[string]string{}
@@ -30,9 +30,22 @@ func NewInitCmd() *cobra.Command {
 				creds["github"] = token
 			}
 
-			resolvYaml := `version: "1.0"
+			fmt.Fprint(cmd.OutOrStderr(), "LLM endpoint (Enter for openai default): ")
+		fmt.Scanln(&endpoint)
+		if endpoint == "" {
+			endpoint = "https://api.openai.com/v1/chat/completions"
+		}
+		fmt.Fprint(cmd.OutOrStderr(), "Model name (Enter for gpt-4o-mini): ")
+		fmt.Scanln(&model)
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+
+		resolvYaml := `version: "1.0"
 project:
   name: "resolv"
+  endpoint: "` + endpoint + `"
+  model: "` + model + `"
 execution:
   max_iterations: 4
   execution_timeout: 300

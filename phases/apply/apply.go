@@ -1,3 +1,7 @@
 package phases
 
-func Apply() error { return nil }
+import "resolv/pkg/change"
+
+func Apply() error {
+	return change.ApplyStructuredEdit("main.go", "old", "new")
+}

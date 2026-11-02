@@ -1,3 +1,8 @@
 package phases
 
-func Build() error { return nil }
+import "resolv/pkg/agent"
+
+func Build() error {
+	_, _ = agent.RunSandboxCommand("go test ./...", 30)
+	return nil
+}

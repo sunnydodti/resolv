@@ -1,3 +1,7 @@
 package phases
 
-func Publish() error { return nil }
+import "resolv/pkg/platform"
+
+func Publish() error {
+	return platform.OpenPullRequest("Resolv fix", "Auto PR", true)
+}

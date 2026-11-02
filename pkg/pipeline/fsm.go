@@ -41,7 +41,7 @@ func (f *FSM) Run(issueRef, domain string, resume bool, dryRun bool, verbose boo
 	} else if verbose {
 		fmt.Println("Dry-run: skipped publish")
 	}
-	meta.CurrentStage = 7; _ = session.SaveMetadata(dir, meta); _ = recordPkg.Record(); _ = session.AppendAudit(dir, map[string]interface{}{"stage":"record","issue":issueRef})
+	meta.CurrentStage = 7; _ = session.SaveMetadata(dir, meta); _ = recordPkg.Record(domain, issueRef); _ = session.AppendAudit(dir, map[string]interface{}{"stage":"record","issue":issueRef})
 	if verbose {
 		fmt.Println("Pipeline complete")
 	}

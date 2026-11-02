@@ -38,8 +38,7 @@ func ParseEdit(content string) (*EditBlock, error) {
 		}
 	}
 
-	// Fallback: extract kind/file/old/new via regex from text
-	var e EditBlock
+	// Fallback
 	re := regexp.MustCompile(`kind:\s*"?edit"?`)
 	if !re.MatchString(content) {
 		return nil, fmt.Errorf("no edit block found")

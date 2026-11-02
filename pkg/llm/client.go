@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	_resolv "resolv/pkg/config"
 )
 
 type Client struct {

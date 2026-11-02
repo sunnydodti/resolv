@@ -1,3 +1,11 @@
 package phases
 
-func Record() error { return nil }
+import (
+	"resolv/pkg/session"
+)
+
+func Record(domain string, issue string) error {
+	dir := session.Dir(domain, "repo", issue)
+	_ = session.AppendAudit(dir, map[string]interface{}{"stage":"record"})
+	return nil
+}

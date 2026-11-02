@@ -1,3 +1,5 @@
 package phases
 
-func Review() error { return nil }
+func Review() error {
+	return nil
+}

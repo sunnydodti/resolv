@@ -16,6 +16,7 @@ func main() {
 
 	rootCmd.AddCommand(_resolv.NewInitCmd())
 	rootCmd.AddCommand(_resolv.NewSetupCmd())
+	rootCmd.AddCommand(_resolv.NewPipelineCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

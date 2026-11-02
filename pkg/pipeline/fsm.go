@@ -1,4 +1,14 @@
 package pipeline
 
-// FSM stages: Analyze → Plan → Apply → Build/Test → Review → Publish → Record
-// Failures: Build/Test back to Apply; Review back to Analyze; exhaustion → Draft PR + gaps
+import (
+	"resolv/pkg/session"
+)
+
+type FSM struct{}
+
+func (f *FSM) Run(issueRef, domain string) error {
+	dir := session.Dir(domain, "repo", issueRef)
+	m, _ := session.LoadMetadata(dir)
+	_ = m
+	return nil
+}

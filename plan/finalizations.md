@@ -18,7 +18,7 @@
 1. **Analyze** — issue read + `git grep` context → LLM root-cause.
 2. **Plan** — LLM proposes edit (`kind:"edit"`).
 3. **Apply** — guard path/glob → `git apply --3way`; if fails, refuse / abort.
-4. **Build / Test** — user-configured `build_cmd` / `test_cmd` from repo config; pass → Review; fail → loop back to **Apply** (re-patch).
+4. **Build / Test** — user-configured `build_cmd` / `test_cmd` from repo config; pass → Review; fail → loop back to **Apply** (re-change).
 5. **Review** — validate result; pass → Publish; fail & turns < max → loop back to **Apply**; fail & turns >= max → **Exhaustion Protocol**.
 6. **Publish** — `resolv-<id>` branch → push → draft PR (`POST /repos/.../pulls`).
 7. **Record** — append `.resolv/runs/<id>/state.json` (after each phase) + `audit.jsonl` finalized after PR.

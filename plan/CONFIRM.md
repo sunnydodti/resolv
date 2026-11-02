@@ -8,13 +8,13 @@
 1. **Analyze**: ContextAgent (GrepFiles, ParseAST) + DatabaseAgent (IntrospectSchema) + AI ExtractIssueIntent
 2. **Plan**: PlannerAgent (CalculateTokenBudget, ValidateBoundaries, GenerateResolutionPlan AI)
 3. **Apply**: GitAgent (CreateWorktree) + CodingAgent (ApplyStructuredEdit, ApplyGitDiffFallback)
-4. **Build / Test**: ExecutionAgent (RunSandboxCommand, CheckBudget) + CodingAgent (GenerateHealingPatch AI)
+4. **Build / Test**: ExecutionAgent (RunSandboxCommand, CheckBudget) + CodingAgent (GenerateHealingEdit AI)
 5. **Review**: SecurityAgent (AuditDiffPaths, ScanEntropy) + ReviewAgent (EvaluateRuleCompliance AI)
 6. **Publish**: GitAgent (CommitChanges, PushBranch) + PlatformAgent (OpenPullRequest, GeneratePRSummary AI, GenerateIssueGapsReport AI)
 7. **Record**: TelemetryAgent (WriteAuditLog — continuous after each stage; audit finalized after PR)
 
 ## Failure Routing (updated)
-- **Build/Test Failure (turns < max)** → loop back to **Apply** (re-patch / self-heal)
+- **Build/Test Failure (turns < max)** → loop back to **Apply** (re-change / self-heal)
 - **Review Failure (turns < max)** → loop back to **Analyze / Plan** (re-evaluate strategy)
 - **Turns >= max / budget exhausted** → **Exhaustion Protocol**:
   - Stage all progress → commit on `resolv-<id>`
@@ -25,7 +25,7 @@
 ## Module Implementation Order (approved)
 - **Module 1**: LLM Client & Prompt Gateway (`pkg/llm/`)
 - **Module 2**: Context & Analysis Engine (`pkg/context/`)
-- **Module 3**: Git Worktree & Patch Engine (`pkg/git/`)
+- **Module 3**: Git Worktree & Change Engine (`pkg/git/`)
 - **Module 4**: Sandbox Execution & Self-Healing (`pkg/agent/` budget + loop)
 - **Module 5**: Platform Publisher & Draft Gap Generator (`pkg/platform/`)
 - **Module 6**: Pipeline Orchestration & State Machine (`pkg/agent/` FSM driver + telemetry)

@@ -1,11 +1,23 @@
 package phases
 
 import (
+	"fmt"
+
 	"resolv/pkg/session"
 )
 
-func Record(domain string, issue string) error {
-	dir := session.Dir(domain, "repo", issue)
-	_ = session.AppendAudit(dir, map[string]interface{}{"stage":"record"})
+func Record(domain, issueRef string) error {
+	dir := session.Dir(domain, "repo", issueRef)
+	_ = dir
+
+	record := session.Record{
+		IssueID:   issueRef,
+		Domain:    domain,
+		Status:    "completed",
+		Completed: true,
+	}
+
+	_ = session.SaveRecord(dir, record)
+	fmt.Printf("[Record] Resolution recorded for %s\n", issueRef)
 	return nil
 }

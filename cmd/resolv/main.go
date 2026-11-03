@@ -27,7 +27,10 @@ func main() {
 			maxTurns, _ := cmd.Flags().GetInt("max-healing-turns")
 			_ = analysisOnly
 			fsm := pipeline.FSM{}
-			_ = fsm.Run(issue, domain, resume, dryRun, verbose, maxTurns)
+			if err := fsm.Run(issue, domain, resume, dryRun, verbose, maxTurns); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 		},
 	}
 	rootCmd.Flags().String("domain", "", "CSV domain list")

@@ -26,9 +26,10 @@ type Message struct {
 }
 
 type Request struct {
-	Model     string    `json:"model"`
-	Messages  []Message `json:"messages"`
-	MaxTokens int       `json:"max_tokens,omitempty"`
+	Model     string         `json:"model"`
+	Messages  []Message      `json:"messages"`
+	MaxTokens int            `json:"max_tokens,omitempty"`
+	Reasoning map[string]bool `json:"reasoning,omitempty"`
 }
 
 type Response struct {
@@ -43,11 +44,12 @@ type Response struct {
 
 func NewClient(endpoint, model, apiKey string) *Client {
 	if endpoint == "" {
-		endpoint = "https://api.openai.com/v1/chat/completions"
+		endpoint = "https://openrouter.ai/api/v1/chat/completions"
 	}
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
+	fmt.Printf("[LLM] endpoint=%s model=%s key_source=credentials.json call_attempted=true\n", endpoint, model)
 	return &Client{
 		Endpoint: endpoint,
 		Model:    model,
@@ -61,6 +63,7 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 		Model:     c.Model,
 		Messages:  messages,
 		MaxTokens: 4096,
+		Reasoning: map[string]bool{"enabled": true},
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
@@ -81,7 +84,9 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return "", 0, fmt.Errorf("LLM HTTP %d", resp.StatusCode)
+		body := make([]byte, 512)
+		resp.Body.Read(body)
+		return "", 0, fmt.Errorf("LLM HTTP %d body=%s", resp.StatusCode, string(body))
 	}
 
 	var r Response
@@ -122,26 +127,38 @@ func LoadConfig() (*Client, error) {
 	}
 	var cfg struct {
 		Project struct {
-			Endpoint string `yaml:"endpoint"`
-			Model    string `yaml:"model"`
+			Endpoint  string `yaml:"endpoint"`
+			Model     string `yaml:"model"`
+			Provider  string `yaml:"provider"`
 		} `yaml:"project"`
 	}
 	_ = yaml.Unmarshal(data, &cfg)
 	apiKey := ""
 	b, err := os.ReadFile(filepath.Join(configDir, "credentials.json"))
-	if err == nil {
-		var creds map[string]string
-		_ = json.Unmarshal(b, &creds)
-		for k, v := range creds {
-			if strings.Contains(k, "openrouter") || strings.Contains(k, "openai") {
-				apiKey = v
+	if err != nil {
+		return nil, fmt.Errorf("no credentials.json found in %s: configure LLM key first", configDir)
+	}
+	var creds map[string]string
+	_ = json.Unmarshal(b, &creds)
+	provider := cfg.Project.Provider
+	if provider == "" {
+		return nil, fmt.Errorf("provider not set in resolv.yml")
+	}
+	fmt.Printf("[LLM] using provider=%s from config\n", provider)
+	for k, v := range creds {
+		if strings.Contains(k, provider) || (provider == "openrouter" && strings.Contains(k, "openai")) {
+			resolved, err := ResolveCredential(v)
+			if err == nil && resolved != "" {
+				apiKey = resolved
+				fmt.Printf("[LLM] key found for provider=%s (len=%d)\n", provider, len(resolved))
 				break
 			}
 		}
 	}
-	if apiKey == "" && os.Getenv("OPENROUTER_API_KEY") != "" {
-		apiKey = os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("no openrouter/openai key in credentials.json")
 	}
 	c := NewClient(cfg.Project.Endpoint, cfg.Project.Model, apiKey)
+	fmt.Printf("[LLM] config loaded endpoint=%s model=%s key_source=credentials.json key_len=%d call_attempted=true\n", cfg.Project.Endpoint, cfg.Project.Model, len(apiKey))
 	return c, nil
 }

@@ -19,6 +19,7 @@ func Plan(issueRef, domain string) error {
 		{Role: "user", Content: fmt.Sprintf("Issue: %s\nDomain: %s", issueRef, domain)},
 	}
 	resp, _, err := c.Call(msg)
+	fmt.Printf("[LLM RAW PLAN] %s\n", resp)
 	if err != nil {
 		return fmt.Errorf("LLM call failed during plan: %w", err)
 	}

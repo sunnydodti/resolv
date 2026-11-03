@@ -63,16 +63,43 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 	var reqBody []byte
 	var err error
 	if isGoogle {
-		googleReq := map[string]interface{}{
-			"contents": []map[string]interface{}{
-				{
-					"parts": []map[string]string{
-						{"text": messages[0].Content},
-					},
-				},
-			},
+		var contents []map[string]interface{}
+		systemText := ""
+		userText := ""
+		for _, m := range messages {
+			if m.Role == "system" {
+				systemText = m.Content
+			} else if m.Role == "user" || m.Role == "" {
+				userText += m.Content + "\n"
+			} else {
+				userText += m.Content + "\n"
+			}
 		}
-		reqBody, err = json.Marshal(googleReq)
+		if systemText != "" && userText != "" {
+			contents = []map[string]interface{}{
+				{"role": "user", "parts": []map[string]string{{"text": userText}}},
+			}
+			googleReq := map[string]interface{}{
+				"systemInstruction": map[string]interface{}{"parts": []map[string]string{{"text": systemText}}},
+				"contents": contents,
+			}
+			reqBody, err = json.Marshal(googleReq)
+		} else if systemText != "" {
+			googleReq := map[string]interface{}{
+				"systemInstruction": map[string]interface{}{"parts": []map[string]string{{"text": systemText}}},
+				"contents": []map[string]interface{}{
+					{"role": "user", "parts": []map[string]string{{"text": userText}}},
+				},
+			}
+			reqBody, err = json.Marshal(googleReq)
+		} else {
+			googleReq := map[string]interface{}{
+				"contents": []map[string]interface{}{
+					{"role": "user", "parts": []map[string]string{{"text": userText}}},
+				},
+			}
+			reqBody, err = json.Marshal(googleReq)
+		}
 	} else {
 		reqBody, err = json.Marshal(Request{
 			Model:     c.Model,
@@ -127,7 +154,11 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 			return "", 0, fmt.Errorf("no candidates in response")
 		}
 		content := googleResp.Candidates[0].Content.Parts[0].Text
-		return content, len(content), nil
+		fmt.Printf("[LLM RAW] len=%d snippet=%s\n", len(content), content)
+	if len(content) > 300 {
+		fmt.Printf("[LLM RAW] ...truncated...\n")
+	}
+	return content, len(content), nil
 	}
 
 	var r Response
@@ -139,6 +170,10 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 	}
 	content := r.Choices[0].Message.Content
 	total := r.Usage.PromptTokens + r.Usage.CompletionTokens
+	fmt.Printf("[LLM RAW] len=%d snippet=%s\n", len(content), content)
+	if len(content) > 300 {
+		fmt.Printf("[LLM RAW] ...truncated...\n")
+	}
 	return content, total, nil
 }
 

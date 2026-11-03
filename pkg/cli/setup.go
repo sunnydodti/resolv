@@ -206,6 +206,21 @@ func NewSetupCmd() *cobra.Command {
 					repo.CredentialKey = keyName
 				}
 
+				fmt.Fprintf(cmd.OutOrStderr(), "Build command (Enter=go build ./..., empty=skip): ")
+				scanner.Scan()
+				repo.BuildCmd = strings.TrimSpace(scanner.Text())
+				if repo.BuildCmd == "" {
+					repo.BuildCmd = "go build ./..."
+				}
+				fmt.Fprintf(cmd.OutOrStderr(), "Test command (Enter=go test ./..., empty=skip): ")
+				scanner.Scan()
+				repo.TestCmd = strings.TrimSpace(scanner.Text())
+				if repo.TestCmd == "" {
+					repo.TestCmd = "go test ./..."
+				}
+				fmt.Fprintf(cmd.OutOrStderr(), "Lint command (Enter=go vet ./..., empty=skip): ")
+				scanner.Scan()
+				repo.LintCmd = strings.TrimSpace(scanner.Text())
 				if domainEntry.Repos == nil {
 					domainEntry.Repos = map[string][]_resolv.Repo{}
 				}

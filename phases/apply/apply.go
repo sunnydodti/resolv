@@ -1,12 +1,15 @@
 package phases
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"resolv/pkg/change"
+	"resolv/pkg/context"
 	"resolv/pkg/llm"
 	"resolv/pkg/session"
 )
@@ -38,9 +41,11 @@ func ApplyEdits(issueRef, domain string) error {
 		return fmt.Errorf("load plan: %w", err)
 	}
 
+	fileList := context.WorkspaceFileList(workspaceDir, 10)
+	editPrompt := fmt.Sprintf("Workspace files: %s. Return exactly one valid JSON array of edit objects: [{ \"file\", \"old\", \"new\" }]. Example: [{\"file\":\"main.go\",\"old\":\"bad\",\"new\":\"good\"}]. file = relative path within workspace repo. old = exact current text, new = exact replacement. If no code changes needed, return [].", fileList)
 	msg := []llm.Message{
-		{Role: "system", Content: "Edit Go source files based on the plan. Return JSON: [{file, old, new}]."},
-		{Role: "user", Content: fmt.Sprintf("Issue: %s\nSteps:\n%s", issueRef, savedPlan.Steps)},
+		{Role: "system", Content: editPrompt},
+		{Role: "user", Content: fmt.Sprintf("Issue: %s\nDomain: %s\nSteps:\n%s", issueRef, domain, savedPlan.Steps)},
 	}
 	resp, _, err := c.Call(msg)
 	if err != nil {
@@ -48,6 +53,17 @@ func ApplyEdits(issueRef, domain string) error {
 	}
 
 	edits := parseEdits(resp)
+	// B. Manual verification seed: if zero edits, try manual file
+	if len(edits) == 0 {
+		manualPath := filepath.Join(sessionDir, "manual_edit.json")
+		if b, err := os.ReadFile(manualPath); err == nil {
+			var manual []EditSpec
+			_ = json.Unmarshal(b, &manual)
+			if len(manual) > 0 {
+				edits = manual
+			}
+		}
+	}
 	if len(edits) == 0 {
 		return fmt.Errorf("LLM returned zero edits; apply blocked — output snippet: %s", resp[:min(200,len(resp))])
 	}

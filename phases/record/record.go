@@ -8,16 +8,14 @@ import (
 
 func Record(domain, issueRef string) error {
 	dir := session.Dir(domain, "repo", issueRef)
-	_ = dir
-
-	record := session.Record{
+	rec := session.Record{
 		IssueID:   issueRef,
 		Domain:    domain,
-		Status:    "completed",
-		Completed: true,
+		Status:    "pending",
+		Completed: false,
 	}
-
-	_ = session.SaveRecord(dir, record)
-	fmt.Printf("[Record] Resolution recorded for %s\n", issueRef)
+	_ = dir
+	_ = session.SaveRecord(dir, rec)
+	fmt.Printf("[Record] Resolution recorded (pending verification) for %s\n", issueRef)
 	return nil
 }

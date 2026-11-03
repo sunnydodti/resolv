@@ -1,4 +1,4 @@
-//go:embed templates/*
+//go:embed *
 package cli
 
 import (

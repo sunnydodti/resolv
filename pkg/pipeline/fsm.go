@@ -14,6 +14,7 @@ import (
 	recordPkg "resolv/phases/record"
 	reviewPkg "resolv/phases/review"
 	"resolv/pkg/session"
+	"resolv/pkg/workspace"
 )
 
 type FSM struct{}
@@ -21,12 +22,24 @@ type FSM struct{}
 func (f *FSM) Run(issueRef, domain string, resume bool, dryRun bool, verbose bool, maxTurns int) error {
 	start := time.Now()
 	fmt.Printf("\n[Pipeline] Starting resolution for %s / %s at %s\n", issueRef, domain, start.Format("15:04:05"))
+
+	// Create / clone workspace for this domain + repo
+	wsDir, err := workspace.Ensure(domain, "repo", issueRef)
+	if err != nil && verbose {
+		fmt.Printf("[Pipeline] Workspace setup note: %v (falling back to CWD)\n", err)
+		wsDir = "."
+	}
+
 	dir := session.Dir(domain, "repo", issueRef)
 	var meta session.Metadata
 	if resume || sessionExists(dir) {
 		meta, _ = session.LoadMetadata(dir)
+		if meta.WorkspaceDir == "" {
+			meta.WorkspaceDir = wsDir
+			_ = session.SaveMetadata(dir, meta)
+		}
 	} else {
-		meta = session.Metadata{IssueID: issueRef, Domain: domain, CurrentStage: 1}
+		meta = session.Metadata{IssueID: issueRef, Domain: domain, CurrentStage: 1, WorkspaceDir: wsDir}
 		_ = session.SaveMetadata(dir, meta)
 	}
 

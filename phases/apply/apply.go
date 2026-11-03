@@ -2,9 +2,11 @@ package phases
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
+	"resolv/pkg/change"
 	"resolv/pkg/llm"
 	"resolv/pkg/session"
 )
@@ -21,12 +23,20 @@ func ApplyEdits(issueRef, domain string) error {
 	}
 
 	sessionDir := session.Dir(domain, "repo", issueRef)
+	meta, _ := session.LoadMetadata(sessionDir)
+	workspaceDir := meta.WorkspaceDir
+	if workspaceDir == "" || workspaceDir == "." {
+		workspaceDir = "."
+	}
+	prevDir, _ := os.Getwd()
+	if workspaceDir != "." && workspaceDir != "" {
+		_ = os.Chdir(workspaceDir)
+		defer func() { _ = os.Chdir(prevDir) }()
+	}
 	savedPlan, err := session.LoadPlan(sessionDir)
 	if err != nil {
 		return fmt.Errorf("load plan: %w", err)
 	}
-
-	_ = loadIssuePayload(issueRef)
 
 	msg := []llm.Message{
 		{Role: "system", Content: "Edit Go source files based on the plan. Return JSON: [{file, old, new}]."},
@@ -38,7 +48,9 @@ func ApplyEdits(issueRef, domain string) error {
 	}
 
 	edits := parseEdits(resp)
-
+	if len(edits) == 0 {
+		return fmt.Errorf("LLM returned zero edits; apply blocked — output snippet: %s", resp[:min(200,len(resp))])
+	}
 	err = applyAllEdits(edits)
 	if err != nil {
 		return fmt.Errorf("apply edits: %w", err)
@@ -55,22 +67,76 @@ func ApplyEdits(issueRef, domain string) error {
 type EditSpec struct{ File, Old, New string }
 
 func applyAllEdits(edits []EditSpec) error {
-	for _, e := range edits {
-		_ = e
+	if len(edits) == 0 {
+		return fmt.Errorf("no edits to apply")
+	}
+	for i, e := range edits {
+		if e.File == "" || e.Old == "" || e.New == "" {
+			return fmt.Errorf("edit %d missing file/old/new: %+v", i, e)
+		}
+		if e.New == "" {
+			return fmt.Errorf("edit %d has empty new text (use \\n for deletion)", i)
+		}
+		err := change.ApplyStructuredEdit(e.File, e.Old, e.New)
+		if err != nil {
+			return fmt.Errorf("edit %d failed for %s: %w", i, e.File, err)
+		}
 	}
 	return nil
 }
 
 func parseEdits(resp string) []EditSpec {
 	var edits []EditSpec
-	strs := splitJSONArray(resp)
-	for _, s := range strs {
-		obj := parseEditObject(s)
-		if obj.File != "" {
-			edits = append(edits, EditSpec{File: obj.File, Old: obj.Old, New: obj.New})
+
+	// Tight path: valid JSON array of edit objects
+	jsonItems := splitJSONArray(resp)
+	if len(jsonItems) > 0 {
+		for _, item := range jsonItems {
+			obj := parseEditObject(item)
+			if obj.File != "" {
+				edits = append(edits, EditSpec{File: obj.File, Old: obj.Old, New: obj.New})
+			}
 		}
 	}
+
+	// Loose fallback: markdown code block containing JSON
+	if len(edits) == 0 && strings.Contains(resp, "```json") {
+		startIdx := strings.Index(resp, "```json")
+		endIdx := strings.LastIndex(resp, "```")
+		if startIdx >= 0 && endIdx > startIdx {
+			inner := resp[startIdx+len("```json"):endIdx]
+			items := splitJSONArray(inner)
+			for _, item := range items {
+				obj := parseEditObject(item)
+				if obj.File != "" {
+					edits = append(edits, EditSpec{File: obj.File, Old: obj.Old, New: obj.New})
+				}
+			}
+		}
+	}
+
+	// Extreme fallback: literal `[{...}]` anywhere
+	if len(edits) == 0 && strings.Contains(resp, "[{") {
+		items := splitJSONArray(resp)
+		for _, item := range items {
+			obj := parseEditObject(item)
+			if obj.File != "" {
+				edits = append(edits, EditSpec{File: obj.File, Old: obj.Old, New: obj.New})
+			}
+		}
+	}
+
+	if len(edits) == 0 {
+		fmt.Printf("[Apply] LLM output had no structured edits; snippet: %s\n", truncate(resp, 300))
+	}
 	return edits
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 type EditObj struct {
@@ -87,6 +153,16 @@ func parseEditObject(s string) EditObj {
 	if out.File == "" {
 		out.File = "main.go"
 	}
+	oldStart := strings.Index(s, `"old"`)
+	if oldStart >= 0 {
+		vStart := strings.Index(s[oldStart:], ":") + oldStart
+		out.Old = extractJSONString(s[vStart+1 : findClosingBrace(s[vStart+1:])])
+	}
+	newStart := strings.Index(s, `"new"`)
+	if newStart >= 0 {
+		vStart := strings.Index(s[newStart:], ":") + newStart
+		out.New = extractJSONString(s[vStart+1 : findClosingBrace(s[vStart+1:])])
+	}
 	return out
 }
 
@@ -102,23 +178,14 @@ func commitChanges(branch string) error {
 	cmd := exec.Command("git", "add", ".")
 	_ = cmd.Run()
 	cmd2 := exec.Command("git", "commit", "-m", fmt.Sprintf("Resolv fix for %s", branch))
-	_ = cmd2.Run()
+	out, err := cmd2.CombinedOutput()
+	if err != nil && strings.Contains(string(out), "nothing to commit") {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("commit failed: %w (%s)", err, out)
+	}
 	return nil
-}
-
-func loadIssuePayload(issueRef string) string {
-	parts := strings.SplitN(issueRef, "/", 2)
-	if len(parts) < 2 {
-		return "Issue reference not parseable"
-	}
-	repo := parts[0]
-	branch := parts[1]
-	cmd := exec.Command("curl", "-s", "-L", fmt.Sprintf("https://api.github.com/repos/%s/issues/%s", repo, branch))
-	out, _ := cmd.Output()
-	if len(out) > 10 {
-		return string(out)
-	}
-	return issueRef
 }
 
 func findClosingBrace(s string) int {

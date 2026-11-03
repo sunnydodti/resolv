@@ -49,8 +49,8 @@ type AnalysisResult struct {
 }
 
 func parseAnalysis(resp string) AnalysisResult {
-	rootCause := "Unknown"
-	severity := "medium"
+	rootCause := "Not found in LLM output"
+	severity := "unknown"
 	if idx := strings.Index(resp, "Root cause:"); idx >= 0 {
 		rest := resp[idx+len("Root cause:"):]
 		if nl := strings.Index(rest, "\n"); nl > 0 {
@@ -71,16 +71,18 @@ func parseAnalysis(resp string) AnalysisResult {
 }
 
 func loadIssuePayload(issueRef string) string {
-	parts := strings.SplitN(issueRef, "/", 2)
-	if len(parts) < 2 {
-		return "Issue reference not parseable"
-	}
-	repo := parts[0]
-	branch := parts[1]
-	cmd := exec.Command("curl", "-s", "-L", fmt.Sprintf("https://api.github.com/repos/%s/issues/%s", repo, branch))
-	out, _ := cmd.Output()
-	if len(out) > 10 {
-		return string(out)
+	// Expected: https://github.com/sunnydodti/resolv/issues/1
+	if strings.HasPrefix(issueRef, "https://github.com/") {
+		parts := strings.Split(issueRef, "/")
+		if len(parts) >= 5 && parts[len(parts)-2] == "issues" {
+			repo := parts[3] + "/" + parts[4]
+			issueNum := parts[len(parts)-1]
+			cmd := exec.Command("curl", "-s", "-L", fmt.Sprintf("https://api.github.com/repos/%s/issues/%s", repo, issueNum))
+			out, _ := cmd.Output()
+			if len(out) > 10 {
+				return string(out)
+			}
+		}
 	}
 	return issueRef
 }

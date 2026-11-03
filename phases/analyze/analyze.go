@@ -20,9 +20,10 @@ func Analyze(issueRef, domain string) error {
 
 	issueText := loadIssuePayload(issueRef)
 
+	issueFiles := context.WorkspaceFileList(".", 15)
 	msg := []llm.Message{
-		{Role: "system", Content: "Analyze the GitHub issue payload for root cause."},
-		{Role: "user", Content: issueText},
+		{Role: "system", Content: fmt.Sprintf("Analyze the GitHub issue for root cause or enhancement scope. Workspace source files available: %s. State if this is a bug or feature request.", issueFiles)},
+		{Role: "user", Content: fmt.Sprintf("Issue: %s\nDomain: %s\n%s", issueText, domain, issueFiles)},
 	}
 	resp, _, err := c.Call(msg)
 	if err != nil {
@@ -37,7 +38,7 @@ func Analyze(issueRef, domain string) error {
 
 	_ = session.Dir(domain, "repo", issueRef)
 
-	fmt.Printf("[Analyze] Root cause: %s | Severity: %s\n", result.RootCause, result.Severity)
+	fmt.Printf("[Analyze] Root cause / enhancement scope: %s | Severity: %s (bug=%v)\n", result.RootCause, result.Severity, result.RootCause != "Not found in LLM output" && result.Severity != "unknown")
 	return nil
 }
 

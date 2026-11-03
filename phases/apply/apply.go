@@ -52,6 +52,7 @@ func ApplyEdits(issueRef, domain string) error {
 		return fmt.Errorf("LLM call failed during apply: %w", err)
 	}
 
+	fmt.Printf("[LLM RAW APPLY] %s\n", resp)
 	edits := parseEdits(resp)
 	// B. Manual verification seed: if zero edits, try manual file
 	if len(edits) == 0 {

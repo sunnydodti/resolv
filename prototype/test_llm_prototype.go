@@ -13,7 +13,7 @@ func main() {
 	if key == "" {
 		key = ""
 	}
-	model := "gemini-3.5-flash-lite"
+	model := "gemini-3.1-flash-lite"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, key)
 
 	reqBody, _ := json.Marshal(map[string]interface{}{

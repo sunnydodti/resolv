@@ -26,6 +26,7 @@ func Analyze(issueRef, domain string) error {
 		{Role: "user", Content: fmt.Sprintf("Issue: %s\nDomain: %s\n%s", issueText, domain, issueFiles)},
 	}
 	resp, _, err := c.Call(msg)
+	fmt.Printf("[LLM RAW ANALYZE] %s\n", resp)
 	if err != nil {
 		return fmt.Errorf("LLM call failed during analyze: %w", err)
 	}

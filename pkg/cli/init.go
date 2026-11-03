@@ -131,8 +131,6 @@ project:
   endpoint: "%s"
   model: "%s"
   provider: "%s"
-  build_cmd: "go build ./..."
-  test_cmd: "go test ./..."
 execution:
   max_iterations: 4
   execution_timeout: 300

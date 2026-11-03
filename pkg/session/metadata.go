@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"path/filepath"
 )
 
@@ -22,7 +23,8 @@ func Dir(domain, repo, issue string) string {
 			configDir = filepath.Join(home, ".resolv")
 		}
 	}
-	return filepath.Join(configDir, "sessions", fmt.Sprintf("%s_%s_%s", domain, repo, issue))
+	safeIssue := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(issue, ":", "_"), "/", "_"), "\\", "_")
+	return filepath.Join(configDir, "sessions", fmt.Sprintf("%s_%s_%s", domain, repo, safeIssue))
 }
 
 func SaveMetadata(dir string, m Metadata) error {

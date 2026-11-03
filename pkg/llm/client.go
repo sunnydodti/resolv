@@ -59,22 +59,43 @@ func NewClient(endpoint, model, apiKey string) *Client {
 }
 
 func (c *Client) Call(messages []Message) (string, int, error) {
-	reqBody := Request{
-		Model:     c.Model,
-		Messages:  messages,
-		MaxTokens: 4096,
-		Reasoning: map[string]bool{"enabled": true},
+	isGoogle := strings.Contains(c.Endpoint, "generativelanguage.googleapis.com")
+	var reqBody []byte
+	var err error
+	if isGoogle {
+		googleReq := map[string]interface{}{
+			"contents": []map[string]interface{}{
+				{
+					"parts": []map[string]string{
+						{"text": messages[0].Content},
+					},
+				},
+			},
+		}
+		reqBody, err = json.Marshal(googleReq)
+	} else {
+		reqBody, err = json.Marshal(Request{
+			Model:     c.Model,
+			Messages:  messages,
+			MaxTokens: 4096,
+			Reasoning: map[string]bool{"enabled": true},
+		})
 	}
-	b, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", 0, err
 	}
-	httpReq, err := http.NewRequest("POST", c.Endpoint, bytes.NewBuffer(b))
+	url := c.Endpoint
+	if strings.Contains(c.Endpoint, "generativelanguage.googleapis.com") {
+		url = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", c.Model, c.APIKey)
+	}
+	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", 0, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if !isGoogle {
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 
 	client := &http.Client{Timeout: c.Timeout}
 	resp, err := client.Do(httpReq)
@@ -87,6 +108,26 @@ func (c *Client) Call(messages []Message) (string, int, error) {
 		body := make([]byte, 512)
 		resp.Body.Read(body)
 		return "", 0, fmt.Errorf("LLM HTTP %d body=%s", resp.StatusCode, string(body))
+	}
+
+	if isGoogle {
+		var googleResp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&googleResp); err != nil {
+			return "", 0, err
+		}
+		if len(googleResp.Candidates) == 0 || len(googleResp.Candidates[0].Content.Parts) == 0 {
+			return "", 0, fmt.Errorf("no candidates in response")
+		}
+		content := googleResp.Candidates[0].Content.Parts[0].Text
+		return content, len(content), nil
 	}
 
 	var r Response

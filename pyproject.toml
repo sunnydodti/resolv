@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "resolv"
+version = "0.1.0"
+description = "Autonomous issue-to-PR CLI agent"
+authors = ["Your Name <you@example.com>"]
+packages = [{include = "core"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+click = "^8.1.0"
+pydantic = "^2.0.0"
+langgraph = "^0.2.0"
+litellm = "^1.0.0"
+instructor = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+resolv = "core.cli:main"

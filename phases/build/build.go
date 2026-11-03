@@ -7,12 +7,14 @@ import (
 )
 
 func Build(issueRef, domain string) error {
-	cmd := exec.Command("go", "build", ".")
+	_ = domain
+
+	cmd := exec.Command("go", "build", "./...")
 	cmd.Dir = "."
 	_, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			fmt.Printf("[Build] Build output:\n%s\n", exitErr.Stderr)
+			fmt.Printf("[Build] Build output (build ./...):\n%s\n", exitErr.Stderr)
 		}
 		return fmt.Errorf("build failed: %w", err)
 	}

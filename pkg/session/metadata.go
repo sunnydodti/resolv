@@ -12,6 +12,7 @@ type Metadata struct {
 	IssueID        string `json:"issue_id"`
 	Domain         string `json:"domain"`
 	RepoPath       string `json:"repo_path"`
+	WorkspaceDir   string `json:"workspace_dir"`
 	CurrentStage   int    `json:"current_stage"`
 	CreatedAt      string `json:"created_at"`
 }

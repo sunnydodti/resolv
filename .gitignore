@@ -1,0 +1,14 @@
+# .gitignore
+.resolv/
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+.langfuse/
+.python-version
+.idea/
+.vscode/
+dist/
+build/
+*.egg-info/

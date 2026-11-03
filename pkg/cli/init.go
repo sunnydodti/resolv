@@ -125,14 +125,22 @@ func NewInitCmd() *cobra.Command {
 				creds[selectedProvider] = apiKey
 			}
 
-			resolvYaml := fmt.Sprintf(`version: "1.0"
+			fmt.Fprintf(cmd.OutOrStderr(), "Build command (Enter=go build ./..., empty=skip): ")
+		var buildCmd string
+		fmt.Scanln(&buildCmd)
+
+		fmt.Fprintf(cmd.OutOrStderr(), "Test command (Enter=go test ./..., empty=skip): ")
+		var testCmd string
+		fmt.Scanln(&testCmd)
+
+		resolvYaml := fmt.Sprintf(`version: "1.0"
 project:
   name: "resolv"
   endpoint: "%s"
   model: "%s"
   provider: "%s"
-  build_cmd: "go build ./..."
-  test_cmd: "go test ./..."
+  build_cmd: "%s"
+  test_cmd: "%s"
 execution:
   max_iterations: 4
   execution_timeout: 300
@@ -144,7 +152,7 @@ platforms:
 tokens:
   github:
     - "github"
-`, endpoint, model, selectedProvider)
+`, endpoint, model, selectedProvider, buildCmd, testCmd)
 
 			_ = os.WriteFile(filepath.Join(dir, "resolv.yml"), []byte(resolvYaml), 0644)
 			if len(creds) > 0 {

@@ -23,6 +23,16 @@ def main(ctx, project, verbose):
 @click.pass_obj
 def run(logger, issue_reference):
     """Run Resolv on an issue reference"""
+    from core.workspace import WorkspaceManager
+    
+    project = "payment-platform" # Should be pulled from context later
+    issue_id = issue_reference.split('/')[-1]
+    
+    ws = WorkspaceManager(project, issue_id)
+    metadata_path = ws.initialize_metadata(issue_reference)
+    
+    logger.info(f"Initialized workspace at: {ws.root}")
+    logger.success(f"Created metadata at: {metadata_path}")
     logger.info(f"Running on issue: {issue_reference}")
 
 if __name__ == '__main__':

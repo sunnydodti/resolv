@@ -1,7 +1,7 @@
+import os
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 import yaml
-import os
 
 class ProviderConfig(BaseModel):
     model: str
@@ -28,3 +28,7 @@ class GlobalConfig(BaseModel):
 def load_yaml(path: str) -> dict:
     with open(path, 'r') as f:
         return yaml.safe_load(f)
+
+def load_global_config() -> GlobalConfig:
+    conf = load_yaml('config/resolv.yaml')
+    return GlobalConfig(**conf)

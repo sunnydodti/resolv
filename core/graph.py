@@ -35,13 +35,26 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     - Initialize metadata.json
     """
     logger: ResolvLogger = state.get("_logger")
-    project_name: str = state.get("project_name", "default")
-    issue_reference: str = state.get("issue_reference", "")
+    project_name: str = state.get("project_name")
+    issue_reference: str = state.get("issue_reference")
+
+    # FAIL EARLY: Required state fields must be present
+    if not project_name:
+        logger.error("Missing required state field: project_name")
+        raise ValueError("Missing project_name in state")
+    if not issue_reference:
+        logger.error("Missing required state field: issue_reference")
+        raise ValueError("Missing issue_reference in state")
 
     logger.info(f"Stage 0: Setup — Establishing isolated session workspace")
 
     # Create session workspace
-    session_path = Path(f".resolv/sessions/{project_name}/{state.get('issue_id', 'unknown')}")
+    issue_id: str = state.get("issue_id", "")
+    if not issue_id:
+        logger.error("Missing required state field: issue_id")
+        raise ValueError("Missing issue_id in state")
+
+    session_path = Path(f".resolv/sessions/{project_name}/{issue_id}")
     session_path.mkdir(parents=True, exist_ok=True)
 
     # Initialize metadata

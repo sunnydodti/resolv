@@ -1,7 +1,7 @@
 """
 LiteLLM Gateway with Instructor integration.
 Provides schema-validated LLM calls with NO fallback (fail-fast per requirements).
-Provider selected via CLI menu, OpenRouter default at start.
+Provider MUST be explicitly selected via CLI menu. No auto-selection, no defaults.
 """
 import os
 import litellm
@@ -20,24 +20,30 @@ class LiteLLMGateway(BaseAgent):
     Multi-provider LLM gateway using LiteLLM + Instructor.
     Every call returns a Pydantic model (structured output).
     NO automatic fallback — if the selected provider fails, the agent fails early.
+    Provider must be explicitly selected before any LLM call.
     """
 
     def __init__(self, logger: ResolvLogger, config: GlobalConfig):
         super().__init__(logger, config)
         self.providers: Dict[str, ProviderConfig] = config.providers
-        self.default_provider = config.default_provider
+        self.config_default_provider = config.default_provider
         self.selected_provider: Optional[str] = None
         self.selected_model: Optional[str] = None
 
-        # Validate that the default provider exists
-        if self.default_provider not in self.providers:
+        # Validate that config has providers
+        if not self.providers:
+            self.logger.error("No LLM providers configured in config/resolv.yaml")
+            raise ValueError("No LLM providers configured")
+
+        # Validate that default provider exists in config (config validation only)
+        if self.config_default_provider not in self.providers:
             self.logger.error(
-                f"Default provider '{self.default_provider}' not found in config. "
+                f"Default provider '{self.config_default_provider}' not found in config. "
                 f"Available: {list(self.providers.keys())}"
             )
-            raise ValueError(f"Missing default provider: {self.default_provider}")
+            raise ValueError(f"Missing default provider: {self.config_default_provider}")
 
-        # Set API keys from environment for all configured providers
+        # Set API keys from environment for all configured providers (validation only)
         for name, provider in self.providers.items():
             env_var = provider.api_key_env
             api_key = os.getenv(env_var)
@@ -47,11 +53,14 @@ class LiteLLMGateway(BaseAgent):
             else:
                 self.logger.warning(
                     f"API key not found for provider '{name}' (env: {env_var}). "
-                    f"Provider will fail at call time."
+                    f"Provider will fail at call time if selected."
                 )
 
     def select_provider(self, provider_name: str, model: Optional[str] = None):
-        """Manually select a provider (called from CLI menu)."""
+        """
+        Manually select a provider (called from CLI menu).
+        This is the ONLY way to select a provider — no auto-selection.
+        """
         if provider_name not in self.providers:
             self.logger.error(f"Provider '{provider_name}' not configured. Available: {list(self.providers.keys())}")
             raise ValueError(f"Unknown provider: {provider_name}")
@@ -60,7 +69,7 @@ class LiteLLMGateway(BaseAgent):
         provider = self.providers[provider_name]
         self.selected_model = model or provider.model
 
-        # Ensure API key is set for this provider
+        # Ensure API key is set for this provider — FAIL EARLY if missing
         env_var = provider.api_key_env
         if not os.getenv(env_var):
             self.logger.error(
@@ -71,12 +80,21 @@ class LiteLLMGateway(BaseAgent):
 
         self.logger.info(f"LLM provider selected: {provider_name} ({self.selected_model})")
 
-    def get_default_provider(self) -> str:
-        """Return the default provider name (OpenRouter per requirements)."""
-        return self.default_provider
+    def require_provider(self) -> str:
+        """
+        Return the currently selected provider.
+        FAIL EARLY if no provider has been selected.
+        """
+        if not self.selected_provider:
+            self.logger.error(
+                "No LLM provider selected. "
+                "Provider must be selected via CLI menu before any LLM call."
+            )
+            raise ValueError("No LLM provider selected")
+        return self.selected_provider
 
-    def list_providers(self) -> List[str]:
-        """Return list of available provider names."""
+    def get_available_providers(self) -> List[str]:
+        """Return list of configured provider names."""
         return list(self.providers.keys())
 
     def execute_structured(
@@ -92,20 +110,21 @@ class LiteLLMGateway(BaseAgent):
         Make an LLM call with Instructor-structured output.
         Returns a validated Pydantic model instance.
         NO fallback — provider failure raises an exception.
+        Provider must be explicitly provided or previously selected.
         """
         from instructor import from_litellm
 
-        provider_name = provider or self.selected_provider or self.default_provider
-        model_name = model or self.selected_model
+        # Resolve provider: explicit param > previously selected > FAIL
+        provider_name = provider or self.require_provider()
 
         if provider_name not in self.providers:
             self.logger.error(f"Provider '{provider_name}' not configured")
             raise ValueError(f"Unknown provider: {provider_name}")
 
         provider_cfg = self.providers[provider_name]
-        model_name = model_name or provider_cfg.model
+        model_name = model or provider_cfg.model
 
-        # Validate API key
+        # Validate API key — FAIL EARLY if missing
         env_var = provider_cfg.api_key_env
         if not os.getenv(env_var):
             self.logger.error(
@@ -125,7 +144,6 @@ class LiteLLMGateway(BaseAgent):
         )
 
         try:
-            # Use instructor for structured output
             client = from_litellm(litellm.completion)
             response: T = client.chat.completions.create(
                 model=model_name,
@@ -155,15 +173,14 @@ class LiteLLMGateway(BaseAgent):
         Used for non-structured tasks.
         NO fallback — provider failure raises an exception.
         """
-        provider_name = provider or self.selected_provider or self.default_provider
-        model_name = model or self.selected_model
+        provider_name = provider or self.require_provider()
 
         if provider_name not in self.providers:
             self.logger.error(f"Provider '{provider_name}' not configured")
             raise ValueError(f"Unknown provider: {provider_name}")
 
         provider_cfg = self.providers[provider_name]
-        model_name = model_name or provider_cfg.model
+        model_name = model or provider_cfg.model
 
         env_var = provider_cfg.api_key_env
         if not os.getenv(env_var):
@@ -187,8 +204,11 @@ class LiteLLMGateway(BaseAgent):
                 max_tokens=max_tokens,
             )
             content = response.choices[0].message.content
+            if not content:
+                self.logger.error(f"LLM returned empty content for {provider_name}/{model_name}")
+                raise ValueError("Empty LLM response")
             self.logger.success(f"LLM text call succeeded: {provider_name}/{model_name}")
-            return content or ""
+            return content
 
         except Exception as e:
             self.logger.error(f"LLM text call failed: {provider_name}/{model_name} — {e}")

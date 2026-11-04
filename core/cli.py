@@ -377,5 +377,167 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
         ctx.exit(1)
 
 
+# =============================================================================
+# Init Command — Global Resolv Initialization (No --project required)
+# =============================================================================
+@main.command()
+@click.option('--verbose', is_flag=True, help='Enable verbose output')
+@click.pass_context
+def init(ctx, verbose):
+    """Initialize Resolv globally (one-time setup)."""
+    logger: ResolvLogger = ctx.obj
+
+    logger.info("Initializing Resolv globally...")
+
+    # Check if already initialized
+    resolv_config = Path("config/resolv.yaml")
+    if resolv_config.exists():
+        logger.error("Resolv is already initialized. config/resolv.yaml exists.")
+        logger.info("Use 'resolv setup --project <name>' to configure a project.")
+        ctx.exit(1)
+
+    # Create directory structure
+    dirs = [
+        "config/projects",
+        "agents/tools",
+        "core",
+        ".resolv",
+    ]
+
+    for d in dirs:
+        Path(d).mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created directory: {d}/")
+
+    # Create default global config
+    default_config = """default_provider: google
+telemetry:
+  enabled: true
+  platform: langfuse
+  host: http://localhost:3000
+  public_key_env: LANGFUSE_PUBLIC_KEY
+  secret_key_env: LANGFUSE_SECRET_KEY
+providers:
+  google:
+    model: gemini/gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  anthropic:
+    model: anthropic/claude-3-5-sonnet
+    api_key_env: ANTHROPIC_API_KEY
+  openrouter:
+    model: openrouter/deepseek/deepseek-r1
+    api_key_env: OPENROUTER_API_KEY
+  local:
+    model: ollama/gemma-4
+    api_base: http://localhost:11434
+"""
+    resolv_config.write_text(default_config)
+    logger.success(f"Created {resolv_config}")
+
+    # Create .gitignore if missing
+    gitignore = Path(".gitignore")
+    if not gitignore.exists():
+        gitignore.write_text("""# Resolv
+.resolv/
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+.langfuse/
+.python-version
+.idea/
+.vscode/
+dist/
+build/
+*.egg-info/
+""")
+        logger.success("Created .gitignore")
+
+    logger.success("Resolv initialized globally.")
+    logger.info("Next: run 'resolv setup --project <name>' to configure a project.")
+
+
+# =============================================================================
+# Setup Command — Per-Project Setup (--project required)
+# =============================================================================
+@main.command()
+@click.option('--project', required=True, help='Target project configuration name')
+@click.option('--verbose', is_flag=True, help='Enable verbose output')
+@click.pass_context
+def setup(ctx, project, verbose):
+    """Set up a project for Resolv (per-project configuration)."""
+    logger: ResolvLogger = ctx.obj
+
+    logger.info(f"Setting up project: {project}")
+
+    # FAIL EARLY: Global config must exist
+    resolv_config = Path("config/resolv.yaml")
+    if not resolv_config.exists():
+        logger.error("Resolv not initialized globally. Run 'resolv init' first.")
+        ctx.exit(1)
+
+    # FAIL EARLY: Project config must not already exist
+    project_config_path = Path(f"config/projects/{project}.yaml")
+    if project_config_path.exists():
+        logger.error(f"Project config already exists: {project_config_path}")
+        logger.info("Use 'resolv run --project {project} <issue_reference>' to run Resolv.")
+        ctx.exit(1)
+
+    # Create projects directory if missing
+    Path("config/projects").mkdir(parents=True, exist_ok=True)
+
+    # Create project config template
+    project_template = f"""name: {project}
+description: Add project description here
+repos:
+  primary:
+    source: github.com/org/{project}
+    repopath: ./workspaces/{project}
+    credentialkey: GITHUB_TOKEN
+    buildcmd: echo build
+    testcmd: echo test
+    lintcmd: echo lint
+  reference: []
+data:
+  database:
+    schema_source: null
+    migrations_path: null
+  other: []
+tokens:
+  GITHUB_TOKEN: env:GITHUB_API_TOKEN
+"""
+    project_config_path.write_text(project_template)
+    logger.success(f"Created {project_config_path}")
+
+    # Validate workspace paths
+    import yaml
+    with open(project_config_path, 'r') as f:
+        proj_cfg = yaml.safe_load(f)
+
+    primary_repo = proj_cfg.get("repos", {}).get("primary", {})
+    repopath = primary_repo.get("repopath", "")
+    if repopath:
+        repo_path = Path(repopath)
+        if repo_path.exists():
+            logger.success(f"Repository path exists: {repopath}")
+        else:
+            logger.warning(f"Repository path not found: {repopath}")
+            logger.info("Create it or update repopath in config/projects/{project}.yaml")
+
+    # Check credentials
+    credential_key = primary_repo.get("credentialkey", "")
+    if credential_key:
+        env_val = __import__('os').getenv(credential_key)
+        if env_val:
+            logger.success(f"Credential resolved: {credential_key}")
+        else:
+            logger.warning(f"Credential not found in env: {credential_key}")
+            logger.info(f"Set it: $env:{credential_key}=\"your-token\"  (Windows PowerShell)")
+            logger.info(f"        export {credential_key}=\"your-token\"  (Linux/macOS)")
+
+    logger.success(f"Project '{project}' set up successfully.")
+    logger.info("Next: run 'resolv --project {project} --provider <name> run <issue_reference>'")
+
+
 if __name__ == '__main__':
     main()

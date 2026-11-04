@@ -1,0 +1,8 @@
+default_provider: google
+telemetry:
+  enabled: true
+  platform: langfuse
+providers:
+  google:
+    model: gemini/gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY

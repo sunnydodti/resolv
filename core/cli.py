@@ -418,10 +418,10 @@ def init(ctx, verbose):
 
     # --- Step 3: Clone Root Directory ---
     logger.info("Step 3: Clone Root Directory")
-    clone_root_default = existing_config.get("clone_root", str(Path.home() / "workspaces")) if existing_config else str(Path.home() / "workspaces")
+    clone_root_default = existing_config.get("clone_root", str(get_resolv_dir() / "workspaces")) if existing_config else str(get_resolv_dir() / "workspaces")
     clone_root = _prompt(logger, "Clone root directory (raw value or env:VARNAME)", default=clone_root_default)
     if not clone_root:
-        clone_root = str(Path.home() / "workspaces")
+        clone_root = str(get_resolv_dir() / "workspaces")
 
     # --- Step 4: Providers ---
     logger.info("Step 4: Configure LLM Providers")
@@ -588,6 +588,7 @@ def setup(ctx, project, verbose):
         credential_key_default = existing_cred_key
 
     logger.info(f"  Credential key (derived from repo host): {credential_key_default}")
+    credential_key = credential_key_default
 
     credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
     if credential_value.startswith("env:"):

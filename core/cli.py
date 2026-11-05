@@ -1,7 +1,7 @@
 """
 Resolv CLI Entry Point.
 Single entry point with operational control flags and provider selection menu.
-All output passes through ResolvLogger facade.
+All output passes through ResolvLogger facade. Direct print/click.echo for user output is prohibited.
 FAIL EARLY: No fallbacks, no defaults, no auto-selection. If anything is missing, fail at startup.
 """
 import click
@@ -14,8 +14,34 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 from core.logger import ResolvLogger, COLORS
-from config.models import load_global_config, load_project_config, ProjectConfig
+from config.models import load_global_config, load_project_config, ProjectConfig, CredentialsStore
 from core.graph import build_graph, load_state_from_checkpoint
+from agents.tools.credentials import CredentialsSubAgent
+
+
+# =============================================================================
+# Helper: Prompt user through logger facade
+# =============================================================================
+def _prompt(logger: ResolvLogger, message: str, default: Optional[str] = None) -> str:
+    """Prompt user for input through the logger facade. Returns stripped input."""
+    if default:
+        logger.prompt(f"{message} [{default}]: ")
+    else:
+        logger.prompt(f"{message}: ")
+    val = input("").strip()
+    if not val and default:
+        return default
+    return val
+
+
+def _prompt_yes_no(logger: ResolvLogger, message: str, default: bool = True) -> bool:
+    """Prompt user for yes/no through the logger facade. Returns boolean."""
+    default_str = "Y/n" if default else "y/N"
+    logger.prompt(f"{message} [{default_str}]: ")
+    val = input("").strip().lower()
+    if not val:
+        return default
+    return val in ("y", "yes")
 
 
 # =============================================================================
@@ -57,131 +83,7 @@ def validate_issue_reference(ref: str) -> bool:
 
 
 # =============================================================================
-# ANSI Color Helper (matches HLD specification)
-# =============================================================================
-def colorize(level: str, message: str) -> str:
-    """Wrap message with ANSI TrueColor based on log level tag."""
-    color = COLORS.get(level, COLORS["RESET"])
-    return f"{color}[{level}]{COLORS['RESET']} {message}"
-
-
-def prompt_vertical(message: str, options: list, default: Optional[str] = None) -> str:
-    """
-    Display a vertical numbered prompt with defaults in brackets.
-    Matches the HLD CLI GUI specification.
-    """
-    click.echo(colorize("?", message))
-    for i, opt in enumerate(options, 1):
-        default_marker = " [default]" if default and str(i) == str(default) else ""
-        click.echo(f"    {i}. {opt}{default_marker}")
-    default_str = str(default) if default else ""
-    choice = click.prompt(
-        colorize("?", f"Choice [1-{len(options)}] (default: {default_str or '1'})"),
-        type=click.Choice([str(i) for i in range(1, len(options) + 1)]),
-        default=str(default or 1),
-        show_default=False,
-    )
-    return choice
-
-
-# =============================================================================
-# Provider Selection Menu (NO auto-selection — must be explicit)
-# =============================================================================
-def select_llm_provider(logger: ResolvLogger, global_config) -> str:
-    """
-    Display provider selection menu.
-    User MUST select explicitly. No auto-selection even if only one provider exists.
-    """
-    providers = list(global_config.providers.keys())
-    default_provider = global_config.default_provider
-
-    if not providers:
-        logger.error("No LLM providers configured in config/resolv.yaml")
-        logger.info("Add at least one provider under 'providers:' section")
-        raise SystemExit(1)
-
-    click.echo()
-    click.echo(colorize("?", "Select LLM Provider:"))
-    for i, prov in enumerate(providers, 1):
-        marker = " [default]" if prov == default_provider else ""
-        click.echo(f"    {i}. {prov}{marker}")
-
-    default_idx = providers.index(default_provider) + 1 if default_provider in providers else 1
-    choice = click.prompt(
-        colorize("?", f"Choice [1-{len(providers)}] (default: {default_idx})"),
-        type=click.Choice([str(i) for i in range(1, len(providers) + 1)]),
-        default=str(default_idx),
-        show_default=False,
-    )
-    selected = providers[int(choice) - 1]
-    logger.info(f"LLM provider selected: {selected}")
-    return selected
-
-
-# =============================================================================
-# Credential Resolution (FAIL EARLY if missing)
-# =============================================================================
-def resolve_credentials(logger: ResolvLogger, project_config) -> dict:
-    """
-    Resolve credentials from environment variables.
-    Supports env:<VARNAME> format.
-    FAIL EARLY: If any required credential env var is missing, exit immediately.
-    """
-    creds = {}
-    repos = project_config.repos if hasattr(project_config, 'repos') else {}
-
-    # Collect all credential keys needed
-    needed_keys = set()
-    for repo_key, repo_cfg in repos.items():
-        if hasattr(repo_cfg, 'credentialkey'):
-            needed_keys.add(repo_cfg.credentialkey)
-
-    # Also check global config tokens
-    if hasattr(project_config, 'tokens') and project_config.tokens:
-        for key in project_config.tokens:
-            needed_keys.add(key)
-
-    if not needed_keys:
-        logger.warning("No credentials required by project configuration")
-        return creds
-
-    missing = []
-    for key in sorted(needed_keys):
-        # Determine env var name
-        env_var = None
-        if hasattr(project_config, 'tokens') and project_config.tokens:
-            token_info = project_config.tokens.get(key, {})
-            if isinstance(token_info, dict) and 'env' in token_info:
-                env_var = token_info['env']
-
-        # Try to resolve from environment
-        if env_var:
-            value = os.getenv(env_var)
-            if value:
-                creds[key] = {"env_ref": env_var}
-                logger.success(f"Credential resolved: {key} (from {env_var})")
-                continue
-            missing.append(f"{key} (env: {env_var})")
-        else:
-            missing.append(f"{key} (no env mapping)")
-
-    if missing:
-        logger.error("Required credentials not found in environment:")
-        for m in missing:
-            logger.error(f"  - {m}")
-        logger.info("")
-        logger.info("Set them before running Resolv, e.g.:")
-        logger.info("  $env:GITHUB_TOKEN=\"your-token\"  (Windows PowerShell)")
-        logger.info("  export GITHUB_TOKEN=\"your-token\"  (Linux/macOS)")
-        logger.info("")
-        logger.info("Or use env:<VARNAME> format in project config to map custom env vars.")
-        raise SystemExit(1)
-
-    return creds
-
-
-# =============================================================================
-# Main CLI Group
+# Main CLI Group — No config loading here (each command handles its own)
 # =============================================================================
 @click.group()
 @click.option('--project', help='Target project configuration')
@@ -192,31 +94,13 @@ def main(ctx, project, verbose):
     logger = ResolvLogger(verbose=verbose)
     ctx.obj = logger
 
-    # Load global config (fail fast if missing)
-    try:
-        global_config = load_global_config()
-        logger.info(f"Loaded global config: {global_config.default_provider}")
-    except Exception as e:
-        logger.error(f"Failed to load global config: {e}")
-        ctx.exit(1)
-
-    ctx.obj._global_config = global_config
-
-    # Load project config if --project was provided (optional at group level, required at run level)
+    # Store project name if provided (loaded lazily by commands that need it)
     if project:
-        if not validate_project_exists(project):
-            logger.error(f"Project configuration not found: '{project}'")
-            available = discover_projects()
-            if available:
-                logger.info(f"Available projects: {', '.join(available)}")
-            ctx.exit(1)
-        try:
-            project_config = load_project_config(project)
-            ctx.obj._project_config = project_config
-            logger.success(f"Project config loaded: {project_config.name}")
-        except Exception as e:
-            logger.error(f"Failed to load project config '{project}': {e}")
-            ctx.exit(1)
+        ctx.obj._project_name = project
+    else:
+        ctx.obj._project_name = None
+    ctx.obj._global_config = None
+    ctx.obj._project_config = None
 
 
 # =============================================================================
@@ -245,30 +129,39 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
     # Load global config (fail fast)
     try:
         global_config = load_global_config()
+        logger.info(f"Loaded global config: {global_config.default_provider}")
     except Exception as e:
         logger.error(f"Failed to load global config: {e}")
         ctx.exit(1)
 
-    project_name = project or (ctx.obj._project_config.name if hasattr(ctx.obj, '_project_config') and ctx.obj._project_config else None)
+    ctx.obj._global_config = global_config
+
+    # Resolve project name: --project flag > main group --project > required
+    project_name = project or ctx.obj._project_name
     if not project_name:
-        logger.error("--project is required. Use --project <name> or set it on the main command.")
+        logger.error("--project is required. Use --project <name>.")
+        available = discover_projects()
+        if available:
+            logger.info(f"Available projects: {', '.join(available)}")
         ctx.exit(1)
 
     # Load project config (fail fast)
     try:
         project_config = load_project_config(project_name)
+        logger.success(f"Project config loaded: {project_config.name}")
     except Exception as e:
         logger.error(f"Failed to load project config '{project_name}': {e}")
         ctx.exit(1)
+
+    ctx.obj._project_config = project_config
 
     # Provider selection: --provider CLI option required (no auto-selection, no fallback)
     if provider:
         selected_provider = provider
         logger.info(f"LLM provider specified via --provider: {selected_provider}")
-    elif hasattr(ctx.obj, '_global_config') and ctx.obj._global_config:
-        # No --provider: require user to specify
-        available = list(ctx.obj._global_config.providers.keys())
-        default_provider = ctx.obj._global_config.default_provider
+    elif global_config:
+        available = list(global_config.providers.keys())
+        default_provider = global_config.default_provider
         logger.error("--provider is required. Specify an LLM provider.")
         logger.info(f"Available providers: {', '.join(available)}")
         logger.info(f"Default in config: {default_provider}")
@@ -379,13 +272,75 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
 
 
 # =============================================================================
+# Credential Resolution (FAIL EARLY if missing)
+# =============================================================================
+def resolve_credentials(logger: ResolvLogger, project_config) -> dict:
+    """
+    Resolve credentials from environment variables.
+    Supports env:<VARNAME> format.
+    FAIL EARLY: If any required credential env var is missing, exit immediately.
+    """
+    creds = {}
+    repos = project_config.repos if hasattr(project_config, 'repos') else {}
+
+    # Collect all credential keys needed
+    needed_keys = set()
+    for repo_key, repo_cfg in repos.items():
+        if hasattr(repo_cfg, 'credentialkey'):
+            needed_keys.add(repo_cfg.credentialkey)
+
+    # Also check global config tokens
+    if hasattr(project_config, 'tokens') and project_config.tokens:
+        for key in project_config.tokens:
+            needed_keys.add(key)
+
+    if not needed_keys:
+        logger.warning("No credentials required by project configuration")
+        return creds
+
+    missing = []
+    for key in sorted(needed_keys):
+        # Determine env var name
+        env_var = None
+        if hasattr(project_config, 'tokens') and project_config.tokens:
+            token_info = project_config.tokens.get(key, {})
+            if isinstance(token_info, dict) and 'env' in token_info:
+                env_var = token_info['env']
+
+        # Try to resolve from environment
+        if env_var:
+            value = os.getenv(env_var)
+            if value:
+                creds[key] = {"env_ref": env_var}
+                logger.success(f"Credential resolved: {key} (from {env_var})")
+                continue
+            missing.append(f"{key} (env: {env_var})")
+        else:
+            missing.append(f"{key} (no env mapping)")
+
+    if missing:
+        logger.error("Required credentials not found in environment:")
+        for m in missing:
+            logger.error(f"  - {m}")
+        logger.info("")
+        logger.info("Set them before running Resolv, e.g.:")
+        logger.info("  $env:GITHUB_TOKEN=\"your-token\"  (Windows PowerShell)")
+        logger.info("  export GITHUB_TOKEN=\"your-token\"  (Linux/macOS)")
+        logger.info("")
+        logger.info("Or use env:<VARNAME> format in project config to map custom env vars.")
+        raise SystemExit(1)
+
+    return creds
+
+
+# =============================================================================
 # Init Command — Global Resolv Initialization (No --project required)
 # =============================================================================
 @main.command()
 @click.option('--verbose', is_flag=True, help='Enable verbose output')
 @click.pass_context
 def init(ctx, verbose):
-    """Initialize Resolv globally (one-time setup). Creates config/resolv.yaml template."""
+    """Initialize Resolv globally (one-time setup). Prompts for global config at each step."""
     logger: ResolvLogger = ctx.obj
 
     logger.info("Initializing Resolv globally...")
@@ -394,8 +349,6 @@ def init(ctx, verbose):
     resolv_config = Path("config/resolv.yaml")
     if resolv_config.exists():
         logger.error("Resolv is already initialized. config/resolv.yaml exists.")
-        logger.info("Edit config/resolv.yaml to modify providers or telemetry.")
-        logger.info("Use 'resolv setup --project <name>' to configure a project.")
         ctx.exit(1)
 
     # Create directory structure
@@ -409,36 +362,83 @@ def init(ctx, verbose):
         Path(d).mkdir(parents=True, exist_ok=True)
         logger.debug(f"Created directory: {d}/")
 
-    # Create global config template with comments
-    global_config_template = """# Resolv Global Configuration
-# Edit this file to configure providers, telemetry, and default settings.
+    logger.info("=== Resolv Global Initialization ===")
+    logger.info("  Step-by-step configuration. Press Enter to accept defaults shown in brackets.")
 
-default_provider: google  # Options: google, anthropic, openrouter, local
+    # --- Step 1: Default Provider ---
+    logger.info("Step 1: Default LLM Provider")
+    logger.info("    1. google      (gemini/gemini-2.5-flash)")
+    logger.info("    2. anthropic   (claude-3-5-sonnet)")
+    logger.info("    3. openrouter  (deepseek/deepseek-r1)")
+    logger.info("    4. local       (ollama/gemma-4)")
+    logger.prompt("Choice [1-4] (default: 1): ")
+    provider_choice = input("").strip() or "1"
+    provider_map = {"1": "google", "2": "anthropic", "3": "openrouter", "4": "local"}
+    default_provider = provider_map.get(provider_choice, "google")
 
-telemetry:
-  enabled: true
+    # --- Step 2: Telemetry ---
+    logger.info("Step 2: Telemetry (Langfuse)")
+    telemetry_enabled = _prompt_yes_no(logger, "Enable Langfuse telemetry?", default=True)
+
+    langfuse_host = "http://localhost:3000"
+    langfuse_public_key_env = "LANGFUSE_PUBLIC_KEY"
+    langfuse_secret_key_env = "LANGFUSE_SECRET_KEY"
+
+    if telemetry_enabled:
+        langfuse_host = _prompt(logger, "Langfuse host URL", default="http://localhost:3000")
+        langfuse_public_key_env = _prompt(logger, "Public key env var name", default="LANGFUSE_PUBLIC_KEY")
+        langfuse_secret_key_env = _prompt(logger, "Secret key env var name", default="LANGFUSE_SECRET_KEY")
+
+    # --- Step 3: Providers ---
+    logger.info("Step 3: Configure LLM Providers")
+    providers = {}
+    for prov_name in ["google", "anthropic", "openrouter", "local"]:
+        add = _prompt_yes_no(logger, f"Configure provider '{prov_name}'?", default=True)
+        if not add:
+            continue
+        model_defaults = {
+            "google": "gemini/gemini-2.5-flash",
+            "anthropic": "anthropic/claude-3-5-sonnet",
+            "openrouter": "openrouter/deepseek/deepseek-r1",
+            "local": "ollama/gemma-4",
+        }
+        model = _prompt(logger, f"  Model for {prov_name}", default=model_defaults.get(prov_name, ""))
+        api_key_env = _prompt(logger, f"  API key env var for {prov_name}", default=f"{prov_name.upper()}_API_KEY")
+        api_base = _prompt(logger, f"  API base URL for {prov_name} (optional)", default="")
+        providers[prov_name] = {
+            "model": model,
+            "api_key_env": api_key_env,
+        }
+        if api_base:
+            providers[prov_name]["api_base"] = api_base
+
+    if not providers:
+        logger.error("At least one provider must be configured.")
+        ctx.exit(1)
+
+    # Build global config YAML
+    telemetry_enabled_str = str(telemetry_enabled).lower()
+    telemetry_section = f"""  enabled: {telemetry_enabled_str}
   platform: langfuse
-  host: http://localhost:3000
-  public_key_env: LANGFUSE_PUBLIC_KEY
-  secret_key_env: LANGFUSE_SECRET_KEY
+  host: {langfuse_host}
+  public_key_env: {langfuse_public_key_env}
+  secret_key_env: {langfuse_secret_key_env}"""
 
+    providers_section = ""
+    for prov_name, prov_cfg in providers.items():
+        providers_section += f"  {prov_name}:\n"
+        providers_section += f"    model: {prov_cfg['model']}\n"
+        providers_section += f"    api_key_env: {prov_cfg['api_key_env']}\n"
+        if prov_cfg.get("api_base"):
+            providers_section += f"    api_base: {prov_cfg['api_base']}\n"
+
+    global_config_yaml = f"""default_provider: {default_provider}
+telemetry:
+{telemetry_section}
 providers:
-  google:
-    model: gemini/gemini-2.5-flash
-    api_key_env: GEMINI_API_KEY
-  anthropic:
-    model: anthropic/claude-3-5-sonnet
-    api_key_env: ANTHROPIC_API_KEY
-  openrouter:
-    model: openrouter/deepseek/deepseek-r1
-    api_key_env: OPENROUTER_API_KEY
-  local:
-    model: ollama/gemma-4
-    api_base: http://localhost:11434
-"""
-    resolv_config.write_text(global_config_template)
+{providers_section}"""
+    resolv_config.write_text(global_config_yaml)
     logger.success(f"Created {resolv_config}")
-    logger.info("Edit config/resolv.yaml to customize providers or telemetry settings.")
 
     # Create .gitignore if missing
     gitignore = Path(".gitignore")
@@ -472,7 +472,7 @@ build/
 @click.option('--verbose', is_flag=True, help='Enable verbose output')
 @click.pass_context
 def setup(ctx, project, verbose):
-    """Set up a project for Resolv (per-project configuration). Creates config/projects/<name>.yaml template."""
+    """Set up a project for Resolv (per-project configuration). Prompts for repo, credentials, and workspace at each step."""
     logger: ResolvLogger = ctx.obj
 
     logger.info(f"Setting up project: {project}")
@@ -483,79 +483,207 @@ def setup(ctx, project, verbose):
         logger.error("Resolv not initialized globally. Run 'resolv init' first.")
         ctx.exit(1)
 
+    # Load global config for provider list (if needed later)
+    try:
+        global_config = load_global_config()
+        ctx.obj._global_config = global_config
+    except Exception as e:
+        logger.error(f"Failed to load global config: {e}")
+        ctx.exit(1)
+
     # FAIL EARLY: Project config must not already exist
     project_config_path = Path(f"config/projects/{project}.yaml")
     if project_config_path.exists():
         logger.error(f"Project config already exists: {project_config_path}")
-        logger.info(f"Edit config/projects/{project}.yaml to modify configuration.")
-        logger.info(f"Use 'resolv --project {project} --provider <name> run <issue_reference>' to run Resolv.")
         ctx.exit(1)
 
     # Create projects directory if missing
     Path("config/projects").mkdir(parents=True, exist_ok=True)
 
-    # Create project config template with comments
-    project_config_template = f"""# Resolv Project Configuration — {project}
-# Edit this file to configure repositories, credentials, and workspace boundaries.
+    logger.info(f"=== Project Setup: {project} ===")
+    logger.info("  Step-by-step configuration. Press Enter to accept defaults shown in brackets.")
 
-name: {project}
-description: Add project description here
+    # --- Step 1: Description ---
+    logger.info("Step 1: Project Description")
+    description = _prompt(logger, "Project description", default=f"{project} project")
 
+    # --- Step 2: Primary Repository ---
+    logger.info("Step 2: Primary Repository")
+    repo_source = _prompt(logger, "Repository source (e.g., github.com/org/repo)")
+    if not repo_source:
+        logger.error("Repository source is required.")
+        ctx.exit(1)
+
+    repo_path = _prompt(logger, "Local repository path", default=f"./workspaces/{project}")
+    if not repo_path:
+        logger.error("Repository path is required.")
+        ctx.exit(1)
+
+    credential_key = _prompt(logger, "Credential key (e.g., GITHUB_TOKEN)", default="GITHUB_TOKEN")
+    if not credential_key:
+        logger.error("Credential key is required.")
+        ctx.exit(1)
+
+    build_cmd = _prompt(logger, "Build command (optional)", default="")
+    test_cmd = _prompt(logger, "Test command (optional)", default="")
+    lint_cmd = _prompt(logger, "Lint command (optional)", default="")
+
+    # --- Step 3: Reference Repositories ---
+    logger.info("Step 3: Reference Repositories")
+    add_refs = _prompt_yes_no(logger, "Add reference repositories?", default=False)
+    reference_repos = []
+    if add_refs:
+        num_refs_str = _prompt(logger, "How many reference repos?", default="1")
+        try:
+            num_refs = int(num_refs_str)
+        except ValueError:
+            num_refs = 1
+        for i in range(num_refs):
+            logger.info(f"  Reference Repo {i + 1}:")
+            r_source = _prompt(logger, "    Source (e.g., github.com/org/repo)")
+            r_path = _prompt(logger, "    Local path")
+            r_cred = _prompt(logger, "    Credential key", default="GITHUB_TOKEN")
+            if r_source and r_path:
+                reference_repos.append({
+                    "source": r_source,
+                    "repopath": r_path,
+                    "credentialkey": r_cred,
+                })
+
+    # --- Step 4: Database ---
+    logger.info("Step 4: Database Configuration")
+    add_db = _prompt_yes_no(logger, "Configure database schema source?", default=False)
+    database_config = {}
+    if add_db:
+        schema_source = _prompt(logger, "  Schema source (e.g., postgresql://user:pass@localhost:5432/db)")
+        migrations_path = _prompt(logger, "  Migrations path (optional)", default="")
+        database_config = {
+            "schema_source": schema_source if schema_source else None,
+            "migrations_path": migrations_path if migrations_path else None,
+        }
+
+    # --- Step 5: Other Data Sources ---
+    logger.info("Step 5: Other Data Sources (read-only docs, specs, etc.)")
+    add_other = _prompt_yes_no(logger, "Add other data sources?", default=False)
+    other_data = []
+    if add_other:
+        num_other_str = _prompt(logger, "  How many data sources?", default="1")
+        try:
+            num_other = int(num_other_str)
+        except ValueError:
+            num_other = 1
+        for i in range(num_other):
+            logger.info(f"  Data Source {i + 1}:")
+            o_path = _prompt(logger, "    Path")
+            o_type = _prompt(logger, "    Type (e.g., read-only-docs)", default="read-only-docs")
+            if o_path:
+                other_data.append({
+                    "path": o_path,
+                    "type": o_type,
+                })
+
+    # --- Step 6: Token Mappings ---
+    logger.info("Step 6: Token Mappings (env:<VARNAME> format)")
+    all_cred_keys = {credential_key}
+    for r in reference_repos:
+        all_cred_keys.add(r.get("credentialkey", "GITHUB_TOKEN"))
+    token_mappings = {}
+    for ck in sorted(all_cred_keys):
+        env_var = _prompt(logger, f"  {ck} env var (or press Enter to skip)", default="")
+        if env_var:
+            token_mappings[ck] = {"env": env_var}
+
+    # Build project config YAML
+    repo_entry = f"""  primary:
+    source: {repo_source}
+    repopath: {repo_path}
+    credentialkey: {credential_key}"""
+    if build_cmd:
+        repo_entry += f"\n    buildcmd: {build_cmd}"
+    if test_cmd:
+        repo_entry += f"\n    testcmd: {test_cmd}"
+    if lint_cmd:
+        repo_entry += f"\n    lintcmd: {lint_cmd}"
+
+    ref_section = "  reference: []\n"
+    if reference_repos:
+        ref_section = "  reference:\n"
+        for r in reference_repos:
+            ref_section += f"    - source: {r['source']}\n"
+            ref_section += f"      repopath: {r['repopath']}\n"
+            ref_section += f"      credentialkey: {r['credentialkey']}\n"
+
+    data_section = "  database:\n    schema_source: null\n    migrations_path: null\n  other: []\n"
+    if database_config or other_data:
+        data_section = "  data:\n"
+        if database_config:
+            ds = database_config.get("schema_source") or "null"
+            mp = database_config.get("migrations_path") or "null"
+            data_section += f"    database:\n      schema_source: {ds}\n      migrations_path: {mp}\n"
+        else:
+            data_section += "    database:\n      schema_source: null\n      migrations_path: null\n"
+        if other_data:
+            data_section += "    other:\n"
+            for o in other_data:
+                data_section += f"      - path: {o['path']}\n        type: {o['type']}\n"
+        else:
+            data_section += "    other: []\n"
+
+    tokens_section = "tokens: {}\n"
+    if token_mappings:
+        tokens_section = "tokens:\n"
+        for ck, tm in token_mappings.items():
+            tokens_section += f"  {ck}: env:{tm['env']}\n"
+
+    project_config_yaml = f"""name: {project}
+description: {description}
 repos:
-  primary:
-    source: github.com/org/{project}  # e.g., github.com/org/payments-api
-    repopath: ./workspaces/{project}   # e.g., /workspaces/payments-api
-    credentialkey: GITHUB_TOKEN        # Credential key name (must match tokens section)
-    buildcmd: echo build               # Build command (optional)
-    testcmd: echo test                 # Test command (optional)
-    lintcmd: echo lint                 # Lint command (optional)
-
-  reference: []                        # Additional reference repositories
-  # Example reference repo:
-  #   - source: github.com/org/shared-contracts
-  #     repopath: /workspaces/shared-contracts
-  #     credentialkey: GITHUB_TOKEN
-
-data:
-  database:
-    schema_source: null                # e.g., postgresql://user:pass@localhost:5432/db
-    migrations_path: null              # e.g., ./migrations
-  other: []                            # Read-only docs, specs, etc.
-  # Example other data source:
-  #   - path: /docs/architecture/specs
-  #     type: read-only-docs
-
-tokens:
-  GITHUB_TOKEN: env:GITHUB_API_TOKEN   # Map credential keys to env vars
-  # Format: <credential_key>: env:<ENV_VAR_NAME>
-  # At runtime, Resolv reads $ENV_VAR_NAME and stores it in credentials.json
-"""
-    project_config_path.write_text(project_config_template)
+{repo_entry}
+{ref_section}{data_section}{tokens_section}"""
+    project_config_path.write_text(project_config_yaml)
     logger.success(f"Created {project_config_path}")
 
-    # Validate workspace paths from template
-    repo_path = f"./workspaces/{project}"
+    # Resolve and store credentials in credentials.json
+    session_path = f".resolv/sessions/{project}/setup"
+    Path(session_path).mkdir(parents=True, exist_ok=True)
+
+    cred_agent = CredentialsSubAgent(logger, None)
+    cred_store = CredentialsStore()
+
+    needed_keys = set(all_cred_keys)
+    missing = []
+    for key in sorted(needed_keys):
+        env_var = token_mappings.get(key, {}).get("env")
+        if env_var:
+            value = os.getenv(env_var)
+            if value:
+                cred_store.add(key=key, env_ref=env_var)
+                logger.success(f"Credential resolved: {key} (from {env_var})")
+            else:
+                missing.append(f"{key} (env: {env_var})")
+        else:
+            missing.append(f"{key} (no env mapping)")
+
+    if missing:
+        logger.warning("Some credentials not found in environment (can set later):")
+        for m in missing:
+            logger.warning(f"  - {m}")
+        logger.info("  Set them before running Resolv, e.g.:")
+        first_missing = missing[0].split(' ')[0] if missing else "GITHUB_TOKEN"
+        logger.info(f"    $env:{first_missing}=\"your-token\"  (Windows PowerShell)")
+        logger.info(f"    export {first_missing}=\"your-token\"  (Linux/macOS)")
+
+    cred_agent.save_to_session(session_path, cred_store)
+    logger.success(f"Saved credentials to {session_path}/credentials.json")
+
+    # Validate workspace paths
     if Path(repo_path).exists():
         logger.success(f"Repository path exists: {repo_path}")
     else:
         logger.warning(f"Repository path not found: {repo_path}")
         logger.info(f"Create it or update repopath in config/projects/{project}.yaml")
 
-    # Check if credential env vars are set
-    credential_key = "GITHUB_TOKEN"
-    env_val = os.getenv(credential_key)
-    if env_val:
-        logger.success(f"Credential resolved: {credential_key}")
-    else:
-        logger.warning(f"Credential env var not set: {credential_key}")
-        logger.info(f"Set it before running Resolv:")
-        logger.info(f"  $env:{credential_key}=\"your-token\"  (Windows PowerShell)")
-        logger.info(f"  export {credential_key}=\"your-token\"  (Linux/macOS)")
-        logger.info("")
-        logger.info("Or update config/projects/{project}.yaml with the correct env var name.")
-
     logger.success(f"Project '{project}' set up successfully.")
-    logger.info(f"Edit config/projects/{project}.yaml to customize repository paths and credentials.")
     logger.info(f"Next: run 'resolv --project {project} --provider <name> run <issue_reference>'")
 
 

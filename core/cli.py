@@ -6,6 +6,7 @@ FAIL EARLY: No fallbacks, no defaults, no auto-selection. If anything is missing
 """
 import click
 import os
+import re
 import uuid
 import json
 import yaml
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 from core.logger import ResolvLogger, COLORS
-from config.models import load_global_config, load_project_config, ProjectConfig, CredentialsStore
+from config.models import load_global_config, load_project_config, ProjectConfig, CredentialsStore, get_global_config_path, get_project_config_path, get_resolv_dir
 from core.graph import build_graph, load_state_from_checkpoint
 from agents.tools.credentials import CredentialsSubAgent
 
@@ -415,8 +416,15 @@ def init(ctx, verbose):
         langfuse_public_key_env = _prompt(logger, "Public key env var name (raw value or env:VARNAME)", default=langfuse_public_key_default)
         langfuse_secret_key_env = _prompt(logger, "Secret key env var name (raw value or env:VARNAME)", default=langfuse_secret_key_default)
 
-    # --- Step 3: Providers ---
-    logger.info("Step 3: Configure LLM Providers")
+    # --- Step 3: Clone Root Directory ---
+    logger.info("Step 3: Clone Root Directory")
+    clone_root_default = existing_config.get("clone_root", str(Path.home() / "workspaces")) if existing_config else str(Path.home() / "workspaces")
+    clone_root = _prompt(logger, "Clone root directory (raw value or env:VARNAME)", default=clone_root_default)
+    if not clone_root:
+        clone_root = str(Path.home() / "workspaces")
+
+    # --- Step 4: Providers ---
+    logger.info("Step 4: Configure LLM Providers")
     existing_providers = existing_config.get("providers", {}) if existing_config else {}
     providers = {}
     for prov_name in ["google", "anthropic", "openrouter", "local"]:
@@ -469,6 +477,7 @@ def init(ctx, verbose):
     global_config_yaml = f"""default_provider: {default_provider}
 telemetry:
 {telemetry_section}
+clone_root: {clone_root}
 providers:
 {providers_section}"""
 
@@ -514,19 +523,20 @@ def setup(ctx, project, verbose):
     logger.info(f"Setting up project: {project}")
 
     # FAIL EARLY: Global config must exist
-    from config.models import get_global_config_path, get_project_config_path
     resolv_config = get_global_config_path()
     if not resolv_config.exists():
         logger.error("Resolv not initialized globally. Run 'resolv init' first.")
         ctx.exit(1)
 
-    # Load global config for provider list (if needed later)
+    # Load global config
     try:
         global_config = load_global_config()
         ctx.obj._global_config = global_config
     except Exception as e:
         logger.error(f"Failed to load global config: {e}")
         ctx.exit(1)
+
+    clone_root = getattr(global_config, 'clone_root', str(Path.home() / "workspaces"))
 
     # Load existing project config as defaults if re-running
     project_config_path = get_project_config_path(project)
@@ -556,19 +566,29 @@ def setup(ctx, project, verbose):
         logger.error("Repository source is required.")
         ctx.exit(1)
 
-    repo_path_default = existing_repo.get("repopath", f"./workspaces/{project}") if existing_repo else f"./workspaces/{project}"
-    repo_path = _prompt(logger, "Local repository path (raw value or env:VARNAME)", default=repo_path_default)
-    if not repo_path:
-        logger.error("Repository path is required.")
-        ctx.exit(1)
+    # Auto-compute repopath as clone_root/<project>
+    repo_path = str(Path(clone_root) / project)
 
-    credential_key_default = existing_repo.get("credentialkey", "GITHUB_TOKEN") if existing_repo else "GITHUB_TOKEN"
-    credential_key = _prompt(logger, "Credential key (e.g., GITHUB_TOKEN) (raw value or env:VARNAME)", default=credential_key_default)
-    if not credential_key:
-        logger.error("Credential key is required.")
-        ctx.exit(1)
+    # Derive credential key from repo source host (e.g., github.com → GITHUB_TOKEN)
+    existing_cred_key = existing_repo.get("credentialkey", "") if existing_repo else ""
+    if not existing_cred_key:
+        host_match = re.search(r'://([^/]+)/', repo_source)
+        if host_match:
+            host = host_match.group(1)
+            # Map common hosts to standard credential key names
+            host_key_map = {
+                'github.com': 'GITHUB_TOKEN',
+                'gitlab.com': 'GITLAB_TOKEN',
+                'bitbucket.org': 'BITBUCKET_TOKEN',
+            }
+            credential_key_default = host_key_map.get(host, f"{host.replace('.', '_').upper()}_TOKEN")
+        else:
+            credential_key_default = "GITHUB_TOKEN"
+    else:
+        credential_key_default = existing_cred_key
 
-    credential_value_default = ""  # Don't show raw credential values as defaults for security
+    logger.info(f"  Credential key (derived from repo host): {credential_key_default}")
+
     credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
     if credential_value.startswith("env:"):
         token_mappings = {credential_key: {"env": credential_value[4:]}}
@@ -577,12 +597,9 @@ def setup(ctx, project, verbose):
     else:
         token_mappings = {}
 
-    build_cmd_default = existing_repo.get("buildcmd", "") if existing_repo else ""
-    build_cmd = _prompt(logger, "Build command (optional) (raw value or env:VARNAME)", default=build_cmd_default)
-    test_cmd_default = existing_repo.get("testcmd", "") if existing_repo else ""
-    test_cmd = _prompt(logger, "Test command (optional) (raw value or env:VARNAME)", default=test_cmd_default)
-    lint_cmd_default = existing_repo.get("lintcmd", "") if existing_repo else ""
-    lint_cmd = _prompt(logger, "Lint command (optional) (raw value or env:VARNAME)", default=lint_cmd_default)
+    build_cmd = _prompt(logger, "Build command (optional) (raw value or env:VARNAME)", default="")
+    test_cmd = _prompt(logger, "Test command (optional) (raw value or env:VARNAME)", default="")
+    lint_cmd = _prompt(logger, "Lint command (optional) (raw value or env:VARNAME)", default="")
 
     # --- Step 2: Reference Repositories ---
     logger.info("Step 2: Reference Repositories")
@@ -597,10 +614,9 @@ def setup(ctx, project, verbose):
         for i in range(num_refs):
             logger.info(f"  Reference Repo {i + 1}:")
             r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
-            r_path = _prompt(logger, "    Local path (raw value or env:VARNAME)")
             r_cred = _prompt(logger, "    Credential key (raw value or env:VARNAME)", default="GITHUB_TOKEN")
             r_cred_val = _prompt(logger, f"    {r_cred} value (raw value or env:VARNAME)")
-            if r_source and r_path:
+            if r_source:
                 cm = {}
                 if r_cred_val.startswith("env:"):
                     cm[r_cred] = {"env": r_cred_val[4:]}
@@ -608,7 +624,7 @@ def setup(ctx, project, verbose):
                     cm[r_cred] = {"raw": r_cred_val}
                 reference_repos.append({
                     "source": r_source,
-                    "repopath": r_path,
+                    "repopath": str(Path(clone_root) / f"ref_{i}"),
                     "credentialkey": r_cred,
                     "credential_map": cm,
                 })
@@ -662,25 +678,25 @@ def setup(ctx, project, verbose):
             if r.get("credential_map"):
                 for ck, cm in r["credential_map"].items():
                     if "env" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\n"
+                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\\n"
                     elif "raw" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\n"
+                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\\n"
 
-    data_section = "  database:\n    schema_source: null\n    migrations_path: null\n  other: []\n"
+    data_section = "  database:\\n    schema_source: null\\n    migrations_path: null\\n  other: []\\n"
     if database_config:
-        data_section = "  data:\n    database:\n"
+        data_section = "  data:\\n    database:\\n"
         ds = database_config.get("schema_source") or "null"
         mp = database_config.get("migrations_path") or "null"
-        data_section += f"      schema_source: {ds}\n      migrations_path: {mp}\n"
+        data_section += f"      schema_source: {ds}\\n      migrations_path: {mp}\\n"
 
-    tokens_section = "tokens: {}\n"
+    tokens_section = "tokens: {}\\n"
     if token_mappings:
-        tokens_section = "tokens:\n"
+        tokens_section = "tokens:\\n"
         for ck, tm in token_mappings.items():
             if "env" in tm:
-                tokens_section += f"  {ck}: env:{tm['env']}\n"
+                tokens_section += f"  {ck}: env:{tm['env']}\\n"
             elif "raw" in tm:
-                tokens_section += f"  {ck}: {tm['raw']}\n"
+                tokens_section += f"  {ck}: {tm['raw']}\\n"
 
     project_config_yaml = f"""name: {project}
 repos:
@@ -750,8 +766,8 @@ repos:
         logger.info("  Set them before running Resolv, e.g.:")
         if missing:
             first_key = missing[0].split(' ')[0]
-            logger.info(f"    $env:{first_key}=\"your-token\"  (Windows PowerShell)")
-            logger.info(f"    export {first_key}=\"your-token\"  (Linux/macOS)")
+            logger.info(f'    $env:{first_key}=\"your-token\"  (Windows PowerShell)')
+            logger.info(f"    export {first_key}=\\\"your-token\\\"  (Linux/macOS)")
 
     cred_agent.save_to_session(session_path, cred_store)
     logger.success(f"Saved credentials to {session_path}/credentials.json")

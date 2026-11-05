@@ -2,15 +2,15 @@ import logging
 import sys
 from typing import Optional
 
-# ANSI Color Codes for TrueColor
+# ANSI Color Codes for TrueColor — Vibrant Material Design colors
 COLORS = {
-    "I": "\033[38;2;138;155;184m", # Soft Slate Blue
-    "S": "\033[38;2;143;188;143m", # Soft Sage Green
-    "W": "\033[38;2;222;198;134m", # Muted Pastel Yellow
-    "E": "\033[38;2;212;142;142m", # Muted Terracotta
-    "D": "\033[38;2;164;152;192m", # Dusty Lavender
-    "H": "\033[38;2;135;184;212m", # Pale Sky Blue
-    "?": "\033[30;48;2;210;215;220m", # Input Prompt
+    "I": "\033[38;2;33;150;243m",  # Blue 500 — Info
+    "S": "\033[38;2;76;175;80m",   # Green 500 — Success
+    "W": "\033[38;2;255;152;0m",   # Orange 500 — Warning
+    "E": "\033[38;2;244;67;54m",   # Red 500 — Error
+    "D": "\033[38;2;156;39;176m",  # Purple 500 — Debug
+    "H": "\033[38;2;3;169;244m",   # Light Blue 500 — Hint
+    "?": "\033[1;38;2;255;255;255;48;2;33;150;243m",  # Bright White on Blue — Input Prompt
     "RESET": "\033[0m"
 }
 

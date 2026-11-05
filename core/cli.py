@@ -429,7 +429,7 @@ def init(ctx, verbose):
     providers = {}
     for prov_name in ["google", "anthropic", "openrouter", "local"]:
         existing_prov = existing_providers.get(prov_name, {})
-        default_add = bool(existing_prov)  # default to Yes if already configured
+        default_add = bool(existing_prov)
         add = _prompt_yes_no(logger, f"Configure provider '{prov_name}'?", default=default_add)
         if not add:
             continue
@@ -523,6 +523,7 @@ def setup(ctx, project, verbose):
     logger.info(f"Setting up project: {project}")
 
     # FAIL EARLY: Global config must exist
+    from config.models import get_global_config_path, get_project_config_path
     resolv_config = get_global_config_path()
     if not resolv_config.exists():
         logger.error("Resolv not initialized globally. Run 'resolv init' first.")
@@ -536,7 +537,7 @@ def setup(ctx, project, verbose):
         logger.error(f"Failed to load global config: {e}")
         ctx.exit(1)
 
-    clone_root = getattr(global_config, 'clone_root', str(Path.home() / "workspaces"))
+    clone_root = getattr(global_config, 'clone_root', str(get_resolv_dir() / "workspaces"))
 
     # Load existing project config as defaults if re-running
     project_config_path = get_project_config_path(project)
@@ -561,21 +562,36 @@ def setup(ctx, project, verbose):
     logger.info("Step 1: Primary Repository")
     existing_repo = existing_project.get("repos", {}).get("primary", {}) if existing_project else {}
     repo_source_default = existing_repo.get("source", "") if existing_repo else ""
-    repo_source = _prompt(logger, "Repository source (e.g., github.com/org/repo) (raw value or env:VARNAME)", default=repo_source_default)
-    if not repo_source:
-        logger.error("Repository source is required.")
-        ctx.exit(1)
+
+    # Repository source selection (options + custom)
+    logger.info("Step 1: Primary Repository")
+    logger.info("    1. github.com")
+    logger.info("    2. gitlab.com")
+    logger.info("    3. bitbucket.org")
+    logger.info("    4. Custom URL")
+    logger.prompt(f"Choice [1-4] (default: 1): ")
+    source_choice = input("").strip() or "1"
+    source_map = {"1": "github.com", "2": "gitlab.com", "3": "bitbucket.org", "4": "custom"}
+    source_choice = source_map.get(source_choice, "custom")
+
+    if source_choice == "custom":
+        repo_source = _prompt(logger, "Repository source URL (raw value or env:VARNAME)", default=repo_source_default)
+        if not repo_source:
+            logger.error("Repository source is required.")
+            ctx.exit(1)
+    else:
+        repo_source = source_choice
+        logger.info(f"  Repository source: {repo_source}")
 
     # Auto-compute repopath as clone_root/<project>
     repo_path = str(Path(clone_root) / project)
 
-    # Derive credential key from repo source host (e.g., github.com → GITHUB_TOKEN)
+    # Derive credential key from repo source host
     existing_cred_key = existing_repo.get("credentialkey", "") if existing_repo else ""
     if not existing_cred_key:
         host_match = re.search(r'://([^/]+)/', repo_source)
         if host_match:
             host = host_match.group(1)
-            # Map common hosts to standard credential key names
             host_key_map = {
                 'github.com': 'GITHUB_TOKEN',
                 'gitlab.com': 'GITLAB_TOKEN',
@@ -588,7 +604,6 @@ def setup(ctx, project, verbose):
         credential_key_default = existing_cred_key
 
     logger.info(f"  Credential key (derived from repo host): {credential_key_default}")
-    credential_key = credential_key_default
 
     credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
     if credential_value.startswith("env:"):
@@ -615,18 +630,17 @@ def setup(ctx, project, verbose):
         for i in range(num_refs):
             logger.info(f"  Reference Repo {i + 1}:")
             r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
-            r_cred = _prompt(logger, "    Credential key (raw value or env:VARNAME)", default="GITHUB_TOKEN")
-            r_cred_val = _prompt(logger, f"    {r_cred} value (raw value or env:VARNAME)")
+            r_cred_val = _prompt(logger, f"    Credential value (raw value or env:VARNAME)")
             if r_source:
                 cm = {}
                 if r_cred_val.startswith("env:"):
-                    cm[r_cred] = {"env": r_cred_val[4:]}
+                    cm["CREDENTIAL_TOKEN"] = {"env": r_cred_val[4:]}
                 elif r_cred_val:
                     cm[r_cred] = {"raw": r_cred_val}
                 reference_repos.append({
                     "source": r_source,
                     "repopath": str(Path(clone_root) / f"ref_{i}"),
-                    "credentialkey": r_cred,
+                    "credentialkey": "CREDENTIAL_TOKEN",
                     "credential_map": cm,
                 })
 
@@ -646,7 +660,7 @@ def setup(ctx, project, verbose):
     logger.info("Step 4: Token Mappings (raw value or env:VARNAME)")
     all_cred_keys = set()
     for r in reference_repos:
-        all_cred_keys.add(r.get("credentialkey", "GITHUB_TOKEN"))
+        all_cred_keys.add(r.get("credentialkey", "CREDENTIAL_TOKEN"))
     for ck in sorted(all_cred_keys):
         if ck in token_mappings:
             continue  # already set from primary repo
@@ -658,10 +672,14 @@ def setup(ctx, project, verbose):
                 token_mappings[ck] = {"raw": val}
 
     # Build project config YAML (all inputs collected — write atomically at end)
+    # Quote Windows paths with backslashes
+    repo_source_quoted = f'"{repo_source}"' if '\\' in repo_source else repo_source
+    repo_path_quoted = f'"{repo_path}"' if '\\' in repo_path else repo_path
+
     repo_entry = f"""  primary:
-    source: {repo_source}
-    repopath: {repo_path}
-    credentialkey: {credential_key}"""
+    source: {repo_source_quoted}
+    repopath: {repo_path_quoted}
+    credentialkey: {credential_key_default}"""
     if build_cmd:
         repo_entry += f"\n    buildcmd: {build_cmd}"
     if test_cmd:
@@ -673,8 +691,10 @@ def setup(ctx, project, verbose):
     if reference_repos:
         ref_section = "  reference:\n"
         for r in reference_repos:
-            ref_section += f"    - source: {r['source']}\n"
-            ref_section += f"      repopath: {r['repopath']}\n"
+            r_source_quoted = f'"{r["source"]}"' if '\\' in r["source"] else r["source"]
+            r_path_quoted = f'"{r["repopath"]}"' if '\\' in r["repopath"] else r["repopath"]
+            ref_section += f"    - source: {r_source_quoted}\n"
+            ref_section += f"      repopath: {r_path_quoted}\n"
             ref_section += f"      credentialkey: {r['credentialkey']}\n"
             if r.get("credential_map"):
                 for ck, cm in r["credential_map"].items():
@@ -688,7 +708,9 @@ def setup(ctx, project, verbose):
         data_section = "  data:\\n    database:\\n"
         ds = database_config.get("schema_source") or "null"
         mp = database_config.get("migrations_path") or "null"
-        data_section += f"      schema_source: {ds}\\n      migrations_path: {mp}\\n"
+        ds_quoted = f'"{ds}"' if ds and '\\' in ds else ds
+        mp_quoted = f'"{mp}"' if mp and '\\' in mp else mp
+        data_section += f"      schema_source: {ds_quoted}\\n      migrations_path: {mp_quoted}\\n"
 
     tokens_section = "tokens: {}\\n"
     if token_mappings:
@@ -767,8 +789,8 @@ repos:
         logger.info("  Set them before running Resolv, e.g.:")
         if missing:
             first_key = missing[0].split(' ')[0]
-            logger.info(f'    $env:{first_key}=\"your-token\"  (Windows PowerShell)')
-            logger.info(f"    export {first_key}=\\\"your-token\\\"  (Linux/macOS)")
+            logger.info(f'    $env:{first_key}=\\"your-token\\"  (Windows PowerShell)')
+            logger.info(f'    export {first_key}=\\\"your-token\\"  (Linux/macOS)')
 
     cred_agent.save_to_session(session_path, cred_store)
     logger.success(f"Saved credentials to {session_path}/credentials.json")

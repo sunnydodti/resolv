@@ -564,7 +564,6 @@ def setup(ctx, project, verbose):
     repo_source_default = existing_repo.get("source", "") if existing_repo else ""
 
     # Repository source selection (options + custom)
-    logger.info("Step 1: Primary Repository")
     logger.info("    1. github.com")
     logger.info("    2. gitlab.com")
     logger.info("    3. bitbucket.org")
@@ -604,6 +603,7 @@ def setup(ctx, project, verbose):
         credential_key_default = existing_cred_key
 
     logger.info(f"  Credential key (derived from repo host): {credential_key_default}")
+    credential_key = credential_key_default
 
     credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
     if credential_value.startswith("env:"):

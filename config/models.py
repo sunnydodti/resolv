@@ -3,6 +3,24 @@ from typing import Dict, List, Optional, Any
 import yaml
 import os
 from datetime import datetime
+from pathlib import Path
+
+
+def get_resolv_dir() -> Path:
+    """Get the Resolv config directory per OS.
+    Linux/macOS: ~/.resolv/
+    Windows: %USERPROFILE%\\.resolv\\
+    """
+    home = Path.home()
+    return home / ".resolv"
+
+
+def get_global_config_path() -> Path:
+    return get_resolv_dir() / "config.yaml"
+
+
+def get_project_config_path(project_name: str) -> Path:
+    return get_resolv_dir() / "projects" / f"{project_name}.yaml"
 
 
 # =============================================================================
@@ -189,12 +207,12 @@ def load_yaml(path: str) -> dict:
 
 
 def load_global_config() -> GlobalConfig:
-    conf = load_yaml('config/resolv.yaml')
+    conf = load_yaml(str(get_global_config_path()))
     return GlobalConfig(**conf)
 
 
 def load_project_config(project_name: str) -> ProjectConfig:
-    path = f'config/projects/{project_name}.yaml'
+    path = str(get_project_config_path(project_name))
     conf = load_yaml(path)
     return ProjectConfig(**conf)
 

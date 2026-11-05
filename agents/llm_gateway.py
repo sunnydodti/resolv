@@ -32,7 +32,7 @@ class LiteLLMGateway(BaseAgent):
 
         # Validate that config has providers
         if not self.providers:
-            self.logger.error("No LLM providers configured in config/resolv.yaml")
+            self.logger.error("No LLM providers configured in ~/.resolv/config.yaml")
             raise ValueError("No LLM providers configured")
 
         # Validate that default provider exists in config (config validation only)

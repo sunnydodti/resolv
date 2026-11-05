@@ -48,8 +48,9 @@ def _prompt_yes_no(logger: ResolvLogger, message: str, default: bool = True) -> 
 # Project Discovery (read-only, no auto-selection)
 # =============================================================================
 def discover_projects() -> List[str]:
-    """List available project configs from config/projects/. No auto-selection."""
-    projects_dir = Path("config/projects")
+    """List available project configs from ~/.resolv/projects/. No auto-selection."""
+    from config.models import get_resolv_dir
+    projects_dir = get_resolv_dir() / "projects"
     if not projects_dir.exists():
         return []
     projects = []
@@ -60,7 +61,8 @@ def discover_projects() -> List[str]:
 
 def validate_project_exists(project_name: str) -> bool:
     """Check if a project config file exists."""
-    return Path(f"config/projects/{project_name}.yaml").exists()
+    from config.models import get_project_config_path
+    return get_project_config_path(project_name).exists()
 
 
 # =============================================================================
@@ -346,14 +348,17 @@ def init(ctx, verbose):
     logger.info("Initializing Resolv globally...")
 
     # FAIL EARLY: Already initialized
-    resolv_config = Path("config/resolv.yaml")
+    from config.models import get_global_config_path
+    resolv_config = get_global_config_path()
     if resolv_config.exists():
-        logger.error("Resolv is already initialized. config/resolv.yaml exists.")
+        logger.error("Resolv is already initialized. ~/.resolv/config.yaml exists.")
         ctx.exit(1)
 
     # Create directory structure
+    from config.models import get_resolv_dir
+    resolv_dir = get_resolv_dir()
     dirs = [
-        "config/projects",
+        str(resolv_dir / "projects"),
         "agents/tools",
         "core",
         ".resolv",
@@ -438,8 +443,9 @@ telemetry:
 {telemetry_section}
 providers:
 {providers_section}"""
-    resolv_config.write_text(global_config_yaml)
-    logger.success(f"Created {resolv_config}")
+    resolv_config_path = get_resolv_dir() / "config.yaml"
+    resolv_config_path.write_text(global_config_yaml)
+    logger.success(f"Created {resolv_config_path}")
 
     # Create .gitignore if missing
     gitignore = Path(".gitignore")
@@ -479,7 +485,8 @@ def setup(ctx, project, verbose):
     logger.info(f"Setting up project: {project}")
 
     # FAIL EARLY: Global config must exist
-    resolv_config = Path("config/resolv.yaml")
+    from config.models import get_global_config_path, get_project_config_path
+    resolv_config = get_global_config_path()
     if not resolv_config.exists():
         logger.error("Resolv not initialized globally. Run 'resolv init' first.")
         ctx.exit(1)
@@ -493,13 +500,13 @@ def setup(ctx, project, verbose):
         ctx.exit(1)
 
     # FAIL EARLY: Project config must not already exist
-    project_config_path = Path(f"config/projects/{project}.yaml")
+    project_config_path = get_project_config_path(project)
     if project_config_path.exists():
         logger.error(f"Project config already exists: {project_config_path}")
         ctx.exit(1)
 
     # Create projects directory if missing
-    Path("config/projects").mkdir(parents=True, exist_ok=True)
+    project_config_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"=== Project Setup: {project} ===")
     logger.info("  Every input: raw value or env:VARNAME")
@@ -522,6 +529,14 @@ def setup(ctx, project, verbose):
         logger.error("Credential key is required.")
         ctx.exit(1)
 
+    credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
+    if credential_value.startswith("env:"):
+        token_mappings = {credential_key: {"env": credential_value[4:]}}
+    elif credential_value:
+        token_mappings = {credential_key: {"raw": credential_value}}
+    else:
+        token_mappings = {}
+
     build_cmd = _prompt(logger, "Build command (optional) (raw value or env:VARNAME)", default="")
     test_cmd = _prompt(logger, "Test command (optional) (raw value or env:VARNAME)", default="")
     lint_cmd = _prompt(logger, "Lint command (optional) (raw value or env:VARNAME)", default="")
@@ -541,11 +556,18 @@ def setup(ctx, project, verbose):
             r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
             r_path = _prompt(logger, "    Local path (raw value or env:VARNAME)")
             r_cred = _prompt(logger, "    Credential key (raw value or env:VARNAME)", default="GITHUB_TOKEN")
+            r_cred_val = _prompt(logger, f"    {r_cred} value (raw value or env:VARNAME)")
             if r_source and r_path:
+                cm = {}
+                if r_cred_val.startswith("env:"):
+                    cm[r_cred] = {"env": r_cred_val[4:]}
+                elif r_cred_val:
+                    cm[r_cred] = {"raw": r_cred_val}
                 reference_repos.append({
                     "source": r_source,
                     "repopath": r_path,
                     "credentialkey": r_cred,
+                    "credential_map": cm,
                 })
 
     # --- Step 3: Database ---
@@ -560,13 +582,14 @@ def setup(ctx, project, verbose):
             "migrations_path": migrations_path if migrations_path else None,
         }
 
-    # --- Step 4: Token Mappings ---
+    # --- Step 4: Token Mappings for reference repo credentials only ---
     logger.info("Step 4: Token Mappings (raw value or env:VARNAME)")
-    all_cred_keys = {credential_key}
+    all_cred_keys = set()
     for r in reference_repos:
         all_cred_keys.add(r.get("credentialkey", "GITHUB_TOKEN"))
-    token_mappings = {}
     for ck in sorted(all_cred_keys):
+        if ck in token_mappings:
+            continue  # already set from primary repo
         val = _prompt(logger, f"  {ck} (raw value or env:VARNAME)", default="")
         if val:
             if val.startswith("env:"):
@@ -593,6 +616,12 @@ def setup(ctx, project, verbose):
             ref_section += f"    - source: {r['source']}\n"
             ref_section += f"      repopath: {r['repopath']}\n"
             ref_section += f"      credentialkey: {r['credentialkey']}\n"
+            if r.get("credential_map"):
+                for ck, cm in r["credential_map"].items():
+                    if "env" in cm:
+                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\n"
+                    elif "raw" in cm:
+                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\n"
 
     data_section = "  database:\n    schema_source: null\n    migrations_path: null\n  other: []\n"
     if database_config:
@@ -624,7 +653,11 @@ repos:
     cred_agent = CredentialsSubAgent(logger, None)
     cred_store = CredentialsStore()
 
-    needed_keys = set(all_cred_keys)
+    # Collect all credential keys from primary token_mappings and reference repo credential_map
+    needed_keys = set(token_mappings.keys())
+    for r in reference_repos:
+        if r.get("credential_map"):
+            needed_keys.update(r["credential_map"].keys())
     missing = []
     for key in sorted(needed_keys):
         tm = token_mappings.get(key, {})
@@ -640,7 +673,30 @@ repos:
             cred_store.add(key=key, value=tm["raw"])
             logger.success(f"Credential resolved: {key} (raw value)")
         else:
-            missing.append(f"{key} (no value provided)")
+            # Check reference repo credential_map
+            found_in_ref = False
+            for r in reference_repos:
+                if r.get("credential_map") and key in r["credential_map"]:
+                    cm = r["credential_map"][key]
+                    if "env" in cm:
+                        env_var = cm["env"]
+                        value = os.getenv(env_var)
+                        if value:
+                            cred_store.add(key=key, env_ref=env_var)
+                            logger.success(f"Credential resolved: {key} (from {env_var})")
+                            found_in_ref = True
+                            break
+                        else:
+                            missing.append(f"{key} (env: {env_var})")
+                            found_in_ref = True
+                            break
+                    elif "raw" in cm:
+                        cred_store.add(key=key, value=cm["raw"])
+                        logger.success(f"Credential resolved: {key} (raw value)")
+                        found_in_ref = True
+                        break
+            if not found_in_ref:
+                missing.append(f"{key} (no value provided)")
 
     if missing:
         logger.warning("Some credentials not resolved (can set later):")
@@ -660,7 +716,7 @@ repos:
         logger.success(f"Repository path exists: {repo_path}")
     else:
         logger.warning(f"Repository path not found: {repo_path}")
-        logger.info(f"Create it or update repopath in config/projects/{project}.yaml")
+        logger.info(f"Create it or update repopath in ~/.resolv/projects/{project}.yaml")
 
     logger.success(f"Project '{project}' set up successfully.")
     logger.info(f"Next: run 'resolv --project {project} --provider <name> run <issue_reference>'")

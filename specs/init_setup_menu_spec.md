@@ -1,5 +1,10 @@
 # Resolv Init & Setup Menu Specification
 
+## Config Location (per OS)
+- Global config: `~/.resolv/config.yaml` (Linux/macOS) or `%USERPROFILE%\.resolv\config.yaml` (Windows)
+- Project configs: `~/.resolv/projects/<name>.yaml`
+- Sessions: `.resolv/sessions/<project>/<issue_id>/` (relative to CWD/project directory)
+
 ## Input Convention (ALL inputs)
 Every input accepts: **raw value** OR **env:VARNAME**.
 - Raw value: stored as-is, used directly
@@ -44,8 +49,9 @@ Format: `[?] Choice [1-4] (default: 1):`
     [?] API base URL for google (optional):
 [Repeat for anthropic, openrouter, local]
 
-[S] Created config/resolv.yaml
+[S] Created ~/.resolv/config.yaml
 [S] Resolv initialized globally.
+[I] Next: run 'resolv setup --project <name>' to configure a project.
 ```
 
 ## `resolv setup --project <name>` — Per-Project
@@ -78,8 +84,9 @@ Format: `[?] Choice [1-4] (default: 1):`
 [For each key:]
     [?]   <KEY> (raw value or env:VARNAME):
 
-[S] Created config/projects/<name>.yaml
+[S] Created ~/.resolv/projects/<name>.yaml
 [S] Credentials saved to .resolv/sessions/<name>/setup/credentials.json
+[I] Next: run 'resolv --project <name> --provider <name> run <issue_reference>'
 ```
 
 ## What is NOT asked
@@ -95,4 +102,4 @@ Format: `[?] Choice [1-4] (default: 1):`
 
 ---
 
-**Approval required before implementation.**
+**Approved spec. Ready for implementation.**

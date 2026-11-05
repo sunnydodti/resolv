@@ -10,7 +10,7 @@ COLORS = {
     "E": "\033[38;2;212;142;142m", # Muted Terracotta
     "D": "\033[38;2;164;152;192m", # Dusty Lavender
     "H": "\033[38;2;135;184;212m", # Pale Sky Blue
-    "P": "\033[30;48;2;210;215;220m", # Input Prompt
+    "?": "\033[30;48;2;210;215;220m", # Input Prompt
     "RESET": "\033[0m"
 }
 
@@ -38,4 +38,9 @@ class ResolvLogger:
     def debug(self, msg):
         if self.verbose:
             self._log("D", msg)
-    def prompt(self, msg): self._log("P", msg)
+    def prompt(self, msg: str):
+        """Prompt user for input without trailing newline so input appears on same line."""
+        color = COLORS.get("?", COLORS["RESET"])
+        formatted_message = f"{color}[?]{COLORS['RESET']} {msg}"
+        sys.stdout.write(formatted_message)
+        sys.stdout.flush()

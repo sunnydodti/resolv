@@ -379,11 +379,17 @@ def init(ctx, verbose):
 
     # --- Step 1: Default Provider ---
     logger.info("Step 1: Default LLM Provider")
-    logger.info("    1. google      (gemini/gemini-2.5-flash)")
-    logger.info("    2. anthropic   (claude-3-5-sonnet)")
-    logger.info("    3. openrouter  (deepseek/deepseek-r1)")
-    logger.info("    4. local       (ollama/gemma-4)")
     default_provider_val = existing_config.get("default_provider", "google") if existing_config else "google"
+    default_marker = " [default]"
+    providers_list = [
+        (1, "google", "gemini/gemini-2.5-flash"),
+        (2, "anthropic", "claude-3-5-sonnet"),
+        (3, "openrouter", "deepseek/deepseek-r1"),
+        (4, "local", "ollama/gemma-4"),
+    ]
+    for num, name, model_str in providers_list:
+        marker = default_marker if name == default_provider_val else ""
+        logger.info(f"    {num}. {name:15s} ({model_str}){marker}")
     logger.prompt(f"Choice [1-4] (default: {default_provider_val}): ")
     provider_choice = input("").strip()
     if not provider_choice:
@@ -397,8 +403,8 @@ def init(ctx, verbose):
     telemetry_enabled = _prompt_yes_no(logger, "Enable Langfuse telemetry?", default=telemetry_default)
 
     langfuse_host_default = existing_config.get("telemetry", {}).get("host", "http://localhost:3000") if existing_config else "http://localhost:3000"
-    langfuse_public_key_default = existing_config.get("telemetry", {}).get("public_key_env", "LANGFUSE_PUBLIC_KEY") if existing_config else "LANGFUSE_PUBLIC_KEY"
-    langfuse_secret_key_default = existing_config.get("telemetry", {}).get("secret_key_env", "LANGFUSE_SECRET_KEY") if existing_config else "LANGFUSE_SECRET_KEY"
+    langfuse_public_key_default = existing_config.get("telemetry", {}).get("public_key_env", "env:LANGFUSE_PUBLIC_KEY") if existing_config else "env:LANGFUSE_PUBLIC_KEY"
+    langfuse_secret_key_default = existing_config.get("telemetry", {}).get("secret_key_env", "env:LANGFUSE_SECRET_KEY") if existing_config else "env:LANGFUSE_SECRET_KEY"
 
     langfuse_host = "http://localhost:3000"
     langfuse_public_key_env = "LANGFUSE_PUBLIC_KEY"
@@ -427,16 +433,18 @@ def init(ctx, verbose):
         }
         model_default = existing_prov.get("model", model_defaults.get(prov_name, "")) if existing_prov else model_defaults.get(prov_name, "")
         model = _prompt(logger, f"  Model for {prov_name} (raw value or env:VARNAME)", default=model_default)
-        api_key_env_default = existing_prov.get("api_key_env", f"{prov_name.upper()}_API_KEY") if existing_prov else f"{prov_name.upper()}_API_KEY"
+        api_key_env_default = existing_prov.get("api_key_env", f"env:{prov_name.upper()}_API_KEY") if existing_prov else f"env:{prov_name.upper()}_API_KEY"
         api_key_env = _prompt(logger, f"  API key env var for {prov_name} (raw value or env:VARNAME)", default=api_key_env_default)
         api_base_default = existing_prov.get("api_base", "") if existing_prov else ""
         api_base = _prompt(logger, f"  API base URL for {prov_name} (optional, raw value or env:VARNAME)", default=api_base_default)
+        api_key_env_raw = api_key_env[4:] if api_key_env.startswith("env:") else api_key_env
+        api_base_raw = api_base[4:] if api_base.startswith("env:") else api_base
         providers[prov_name] = {
             "model": model,
-            "api_key_env": api_key_env,
+            "api_key_env": api_key_env_raw,
         }
-        if api_base:
-            providers[prov_name]["api_base"] = api_base
+        if api_base_raw:
+            providers[prov_name]["api_base"] = api_base_raw
 
     if not providers:
         logger.error("At least one provider must be configured.")

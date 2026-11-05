@@ -363,11 +363,12 @@ def init(ctx, verbose):
         logger.debug(f"Created directory: {d}/")
 
     logger.info("=== Resolv Global Initialization ===")
-    logger.info("  Step-by-step configuration. Press Enter to accept defaults shown in brackets.")
+    logger.info("  Every input: raw value or env:VARNAME")
+    logger.info("  Press Enter to accept defaults shown in brackets.")
 
     # --- Step 1: Default Provider ---
     logger.info("Step 1: Default LLM Provider")
-    logger.info("    1. google      (gemini/gemini-2.5-flash)")
+    logger.info("    1. google      (gemini/gemini-2.5-flash) [default]")
     logger.info("    2. anthropic   (claude-3-5-sonnet)")
     logger.info("    3. openrouter  (deepseek/deepseek-r1)")
     logger.info("    4. local       (ollama/gemma-4)")
@@ -385,9 +386,9 @@ def init(ctx, verbose):
     langfuse_secret_key_env = "LANGFUSE_SECRET_KEY"
 
     if telemetry_enabled:
-        langfuse_host = _prompt(logger, "Langfuse host URL", default="http://localhost:3000")
-        langfuse_public_key_env = _prompt(logger, "Public key env var name", default="LANGFUSE_PUBLIC_KEY")
-        langfuse_secret_key_env = _prompt(logger, "Secret key env var name", default="LANGFUSE_SECRET_KEY")
+        langfuse_host = _prompt(logger, "Langfuse host URL (raw value or env:VARNAME)", default="http://localhost:3000")
+        langfuse_public_key_env = _prompt(logger, "Public key env var name (raw value or env:VARNAME)", default="LANGFUSE_PUBLIC_KEY")
+        langfuse_secret_key_env = _prompt(logger, "Secret key env var name (raw value or env:VARNAME)", default="LANGFUSE_SECRET_KEY")
 
     # --- Step 3: Providers ---
     logger.info("Step 3: Configure LLM Providers")
@@ -402,9 +403,9 @@ def init(ctx, verbose):
             "openrouter": "openrouter/deepseek/deepseek-r1",
             "local": "ollama/gemma-4",
         }
-        model = _prompt(logger, f"  Model for {prov_name}", default=model_defaults.get(prov_name, ""))
-        api_key_env = _prompt(logger, f"  API key env var for {prov_name}", default=f"{prov_name.upper()}_API_KEY")
-        api_base = _prompt(logger, f"  API base URL for {prov_name} (optional)", default="")
+        model = _prompt(logger, f"  Model for {prov_name} (raw value or env:VARNAME)", default=model_defaults.get(prov_name, ""))
+        api_key_env = _prompt(logger, f"  API key env var for {prov_name} (raw value or env:VARNAME)", default=f"{prov_name.upper()}_API_KEY")
+        api_base = _prompt(logger, f"  API base URL for {prov_name} (optional, raw value or env:VARNAME)", default="")
         providers[prov_name] = {
             "model": model,
             "api_key_env": api_key_env,
@@ -501,35 +502,32 @@ def setup(ctx, project, verbose):
     Path("config/projects").mkdir(parents=True, exist_ok=True)
 
     logger.info(f"=== Project Setup: {project} ===")
-    logger.info("  Step-by-step configuration. Press Enter to accept defaults shown in brackets.")
+    logger.info("  Every input: raw value or env:VARNAME")
+    logger.info("  Press Enter to accept defaults shown in brackets.")
 
-    # --- Step 1: Description ---
-    logger.info("Step 1: Project Description")
-    description = _prompt(logger, "Project description", default=f"{project} project")
-
-    # --- Step 2: Primary Repository ---
-    logger.info("Step 2: Primary Repository")
-    repo_source = _prompt(logger, "Repository source (e.g., github.com/org/repo)")
+    # --- Step 1: Primary Repository ---
+    logger.info("Step 1: Primary Repository")
+    repo_source = _prompt(logger, "Repository source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
     if not repo_source:
         logger.error("Repository source is required.")
         ctx.exit(1)
 
-    repo_path = _prompt(logger, "Local repository path", default=f"./workspaces/{project}")
+    repo_path = _prompt(logger, "Local repository path (raw value or env:VARNAME)", default=f"./workspaces/{project}")
     if not repo_path:
         logger.error("Repository path is required.")
         ctx.exit(1)
 
-    credential_key = _prompt(logger, "Credential key (e.g., GITHUB_TOKEN)", default="GITHUB_TOKEN")
+    credential_key = _prompt(logger, "Credential key (e.g., GITHUB_TOKEN) (raw value or env:VARNAME)", default="GITHUB_TOKEN")
     if not credential_key:
         logger.error("Credential key is required.")
         ctx.exit(1)
 
-    build_cmd = _prompt(logger, "Build command (optional)", default="")
-    test_cmd = _prompt(logger, "Test command (optional)", default="")
-    lint_cmd = _prompt(logger, "Lint command (optional)", default="")
+    build_cmd = _prompt(logger, "Build command (optional) (raw value or env:VARNAME)", default="")
+    test_cmd = _prompt(logger, "Test command (optional) (raw value or env:VARNAME)", default="")
+    lint_cmd = _prompt(logger, "Lint command (optional) (raw value or env:VARNAME)", default="")
 
-    # --- Step 3: Reference Repositories ---
-    logger.info("Step 3: Reference Repositories")
+    # --- Step 2: Reference Repositories ---
+    logger.info("Step 2: Reference Repositories")
     add_refs = _prompt_yes_no(logger, "Add reference repositories?", default=False)
     reference_repos = []
     if add_refs:
@@ -540,9 +538,9 @@ def setup(ctx, project, verbose):
             num_refs = 1
         for i in range(num_refs):
             logger.info(f"  Reference Repo {i + 1}:")
-            r_source = _prompt(logger, "    Source (e.g., github.com/org/repo)")
-            r_path = _prompt(logger, "    Local path")
-            r_cred = _prompt(logger, "    Credential key", default="GITHUB_TOKEN")
+            r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
+            r_path = _prompt(logger, "    Local path (raw value or env:VARNAME)")
+            r_cred = _prompt(logger, "    Credential key (raw value or env:VARNAME)", default="GITHUB_TOKEN")
             if r_source and r_path:
                 reference_repos.append({
                     "source": r_source,
@@ -550,48 +548,31 @@ def setup(ctx, project, verbose):
                     "credentialkey": r_cred,
                 })
 
-    # --- Step 4: Database ---
-    logger.info("Step 4: Database Configuration")
+    # --- Step 3: Database ---
+    logger.info("Step 3: Database Configuration")
     add_db = _prompt_yes_no(logger, "Configure database schema source?", default=False)
     database_config = {}
     if add_db:
-        schema_source = _prompt(logger, "  Schema source (e.g., postgresql://user:pass@localhost:5432/db)")
-        migrations_path = _prompt(logger, "  Migrations path (optional)", default="")
+        schema_source = _prompt(logger, "  Schema source (e.g., postgresql://user:pass@localhost:5432/db) (raw value or env:VARNAME)")
+        migrations_path = _prompt(logger, "  Migrations path (optional) (raw value or env:VARNAME)", default="")
         database_config = {
             "schema_source": schema_source if schema_source else None,
             "migrations_path": migrations_path if migrations_path else None,
         }
 
-    # --- Step 5: Other Data Sources ---
-    logger.info("Step 5: Other Data Sources (read-only docs, specs, etc.)")
-    add_other = _prompt_yes_no(logger, "Add other data sources?", default=False)
-    other_data = []
-    if add_other:
-        num_other_str = _prompt(logger, "  How many data sources?", default="1")
-        try:
-            num_other = int(num_other_str)
-        except ValueError:
-            num_other = 1
-        for i in range(num_other):
-            logger.info(f"  Data Source {i + 1}:")
-            o_path = _prompt(logger, "    Path")
-            o_type = _prompt(logger, "    Type (e.g., read-only-docs)", default="read-only-docs")
-            if o_path:
-                other_data.append({
-                    "path": o_path,
-                    "type": o_type,
-                })
-
-    # --- Step 6: Token Mappings ---
-    logger.info("Step 6: Token Mappings (env:<VARNAME> format)")
+    # --- Step 4: Token Mappings ---
+    logger.info("Step 4: Token Mappings (raw value or env:VARNAME)")
     all_cred_keys = {credential_key}
     for r in reference_repos:
         all_cred_keys.add(r.get("credentialkey", "GITHUB_TOKEN"))
     token_mappings = {}
     for ck in sorted(all_cred_keys):
-        env_var = _prompt(logger, f"  {ck} env var (or press Enter to skip)", default="")
-        if env_var:
-            token_mappings[ck] = {"env": env_var}
+        val = _prompt(logger, f"  {ck} (raw value or env:VARNAME)", default="")
+        if val:
+            if val.startswith("env:"):
+                token_mappings[ck] = {"env": val[4:]}
+            else:
+                token_mappings[ck] = {"raw": val}
 
     # Build project config YAML
     repo_entry = f"""  primary:
@@ -614,29 +595,22 @@ def setup(ctx, project, verbose):
             ref_section += f"      credentialkey: {r['credentialkey']}\n"
 
     data_section = "  database:\n    schema_source: null\n    migrations_path: null\n  other: []\n"
-    if database_config or other_data:
-        data_section = "  data:\n"
-        if database_config:
-            ds = database_config.get("schema_source") or "null"
-            mp = database_config.get("migrations_path") or "null"
-            data_section += f"    database:\n      schema_source: {ds}\n      migrations_path: {mp}\n"
-        else:
-            data_section += "    database:\n      schema_source: null\n      migrations_path: null\n"
-        if other_data:
-            data_section += "    other:\n"
-            for o in other_data:
-                data_section += f"      - path: {o['path']}\n        type: {o['type']}\n"
-        else:
-            data_section += "    other: []\n"
+    if database_config:
+        data_section = "  data:\n    database:\n"
+        ds = database_config.get("schema_source") or "null"
+        mp = database_config.get("migrations_path") or "null"
+        data_section += f"      schema_source: {ds}\n      migrations_path: {mp}\n"
 
     tokens_section = "tokens: {}\n"
     if token_mappings:
         tokens_section = "tokens:\n"
         for ck, tm in token_mappings.items():
-            tokens_section += f"  {ck}: env:{tm['env']}\n"
+            if "env" in tm:
+                tokens_section += f"  {ck}: env:{tm['env']}\n"
+            elif "raw" in tm:
+                tokens_section += f"  {ck}: {tm['raw']}\n"
 
     project_config_yaml = f"""name: {project}
-description: {description}
 repos:
 {repo_entry}
 {ref_section}{data_section}{tokens_section}"""
@@ -653,25 +627,30 @@ repos:
     needed_keys = set(all_cred_keys)
     missing = []
     for key in sorted(needed_keys):
-        env_var = token_mappings.get(key, {}).get("env")
-        if env_var:
+        tm = token_mappings.get(key, {})
+        if "env" in tm:
+            env_var = tm["env"]
             value = os.getenv(env_var)
             if value:
                 cred_store.add(key=key, env_ref=env_var)
                 logger.success(f"Credential resolved: {key} (from {env_var})")
             else:
                 missing.append(f"{key} (env: {env_var})")
+        elif "raw" in tm:
+            cred_store.add(key=key, value=tm["raw"])
+            logger.success(f"Credential resolved: {key} (raw value)")
         else:
-            missing.append(f"{key} (no env mapping)")
+            missing.append(f"{key} (no value provided)")
 
     if missing:
-        logger.warning("Some credentials not found in environment (can set later):")
+        logger.warning("Some credentials not resolved (can set later):")
         for m in missing:
             logger.warning(f"  - {m}")
         logger.info("  Set them before running Resolv, e.g.:")
-        first_missing = missing[0].split(' ')[0] if missing else "GITHUB_TOKEN"
-        logger.info(f"    $env:{first_missing}=\"your-token\"  (Windows PowerShell)")
-        logger.info(f"    export {first_missing}=\"your-token\"  (Linux/macOS)")
+        if missing:
+            first_key = missing[0].split(' ')[0]
+            logger.info(f"    $env:{first_key}=\"your-token\"  (Windows PowerShell)")
+            logger.info(f"    export {first_key}=\"your-token\"  (Linux/macOS)")
 
     cred_agent.save_to_session(session_path, cred_store)
     logger.success(f"Saved credentials to {session_path}/credentials.json")

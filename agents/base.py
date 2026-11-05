@@ -18,4 +18,8 @@ class BaseAgent(ABC):
 
 class SubAgent(BaseAgent):
     """Marker for low-level execution units (Deterministic/AI)."""
-    pass
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Default no-op execute for sub-agents that don't have a primary task."""
+        self.logger.debug(f"SubAgent {self.__class__.__name__}.execute() called with no specific task")
+        return None

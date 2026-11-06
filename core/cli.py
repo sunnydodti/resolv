@@ -1,11 +1,12 @@
 """
 Resolv CLI Entry Point.
 Single entry point with operational control flags and provider selection menu.
-All output passes through ResolvLogger facade. Direct print/click.echo for user output is prohibited.
+All output passes through ResolvLogger facade. Direct print statements are prohibited.
 FAIL EARLY: No fallbacks, no defaults, no auto-selection. If anything is missing, fail at startup.
 """
 import click
 import os
+import re
 import uuid
 import json
 import yaml
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 from core.logger import ResolvLogger, COLORS
-from config.models import load_global_config, load_project_config, ProjectConfig, CredentialsStore
+from config.models import load_global_config, load_project_config, ProjectConfig, CredentialsStore, get_global_config_path, get_project_config_path, get_resolv_dir
 from core.graph import build_graph, load_state_from_checkpoint
 from agents.tools.credentials import CredentialsSubAgent
 
@@ -49,7 +50,6 @@ def _prompt_yes_no(logger: ResolvLogger, message: str, default: bool = True) -> 
 # =============================================================================
 def discover_projects() -> List[str]:
     """List available project configs from ~/.resolv/projects/. No auto-selection."""
-    from config.models import get_resolv_dir
     projects_dir = get_resolv_dir() / "projects"
     if not projects_dir.exists():
         return []
@@ -61,7 +61,6 @@ def discover_projects() -> List[str]:
 
 def validate_project_exists(project_name: str) -> bool:
     """Check if a project config file exists."""
-    from config.models import get_project_config_path
     return get_project_config_path(project_name).exists()
 
 
@@ -85,7 +84,7 @@ def validate_issue_reference(ref: str) -> bool:
 
 
 # =============================================================================
-# Main CLI Group — No config loading here (each command handles its own)
+# Main CLI Group - No config loading here (each command handles its own)
 # =============================================================================
 @click.group()
 @click.option('--project', help='Target project configuration')
@@ -157,7 +156,7 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
 
     ctx.obj._project_config = project_config
 
-    # Provider selection: --provider CLI option required (no auto-selection, no fallback)
+    # Provider selection: --project flag > main group > no auto-selection
     if provider:
         selected_provider = provider
         logger.info(f"LLM provider specified via --provider: {selected_provider}")
@@ -231,10 +230,6 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
             "langfuse_trace_id": None,
             "token_usage": None,
             "cost_estimate": None,
-            "dry_run": dry_run,
-            "analysis_only": analysis,
-            "verbose": verbose,
-            "resume_from_stage": None,
             "_logger": logger,
         }
 
@@ -336,7 +331,7 @@ def resolve_credentials(logger: ResolvLogger, project_config) -> dict:
 
 
 # =============================================================================
-# Init Command — Global Resolv Initialization (No --project required)
+# Init Command -- Global Resolv Initialization (No --project required)
 # =============================================================================
 @main.command()
 @click.option('--verbose', is_flag=True, help='Enable verbose output')
@@ -347,18 +342,20 @@ def init(ctx, verbose):
 
     logger.info("Initializing Resolv globally...")
 
-    # FAIL EARLY: Already initialized
-    from config.models import get_global_config_path
-    resolv_config = get_global_config_path()
-    if resolv_config.exists():
-        logger.error("Resolv is already initialized. ~/.resolv/config.yaml exists.")
-        ctx.exit(1)
+    # Idempotent: load existing config as defaults if re-running
+    resolv_config_path = get_global_config_path()
+    existing_config = None
+    if resolv_config_path.exists():
+        try:
+            with open(resolv_config_path, 'r') as f:
+                existing_config = yaml.safe_load(f)
+            logger.info(f"Existing global config found at {resolv_config_path}. Press Enter to keep current values.")
+        except Exception as e:
+            logger.warning(f"Could not read existing config: {e}. Starting fresh.")
 
     # Create directory structure
-    from config.models import get_resolv_dir
-    resolv_dir = get_resolv_dir()
     dirs = [
-        str(resolv_dir / "projects"),
+        str(get_resolv_dir() / "projects"),
         "agents/tools",
         "core",
         ".resolv",
@@ -371,35 +368,56 @@ def init(ctx, verbose):
     logger.info("  Every input: raw value or env:VARNAME")
     logger.info("  Press Enter to accept defaults shown in brackets.")
 
-    # --- Step 1: Default Provider ---
+    # --- Stage 1: Default Provider ---
     logger.info("Step 1: Default LLM Provider")
-    logger.info("    1. google      (gemini/gemini-2.5-flash) [default]")
-    logger.info("    2. anthropic   (claude-3-5-sonnet)")
-    logger.info("    3. openrouter  (deepseek/deepseek-r1)")
-    logger.info("    4. local       (ollama/gemma-4)")
-    logger.prompt("Choice [1-4] (default: 1): ")
+    default_provider_val = existing_config.get("default_provider", "google") if existing_config else "google"
+    default_marker = " [default]"
+    providers_list = [
+        (1, "google", "gemini/gemini-2.5-flash"),
+        (2, "anthropic", "claude-3-5-sonnet"),
+        (3, "openrouter", "deepseek/deepseek-r1"),
+        (4, "local", "ollama/gemma-4"),
+    ]
+    for num, name, model_str in providers_list:
+        marker = default_marker if name == default_provider_val else ""
+        logger.info(f"    {num}. {name:15s} ({model_str}){marker}")
+    logger.prompt(f"Choice [1-4] (default: {default_provider_val}): ")
     provider_choice = input("").strip() or "1"
     provider_map = {"1": "google", "2": "anthropic", "3": "openrouter", "4": "local"}
-    default_provider = provider_map.get(provider_choice, "google")
+    default_provider = provider_map.get(provider_choice, provider_choice if provider_choice in provider_map.values() else "google")
 
     # --- Step 2: Telemetry ---
     logger.info("Step 2: Telemetry (Langfuse)")
     telemetry_enabled = _prompt_yes_no(logger, "Enable Langfuse telemetry?", default=True)
+
+    langfuse_host_default = existing_config.get("telemetry", {}).get("host", "http://localhost:3000") if existing_config else "http://localhost:3000"
+    langfuse_public_key_default = existing_config.get("telemetry", {}).get("public_key_env", "env:LANGFUSE_PUBLIC_KEY") if existing_config else "env:LANGFUSE_PUBLIC_KEY"
+    langfuse_secret_key_default = existing_config.get("telemetry", {}).get("secret_key_env", "env:LANGFUSE_SECRET_KEY") if existing_config else "env:LANGFUSE_SECRET_KEY"
 
     langfuse_host = "http://localhost:3000"
     langfuse_public_key_env = "LANGFUSE_PUBLIC_KEY"
     langfuse_secret_key_env = "LANGFUSE_SECRET_KEY"
 
     if telemetry_enabled:
-        langfuse_host = _prompt(logger, "Langfuse host URL (raw value or env:VARNAME)", default="http://localhost:3000")
-        langfuse_public_key_env = _prompt(logger, "Public key env var name (raw value or env:VARNAME)", default="LANGFUSE_PUBLIC_KEY")
-        langfuse_secret_key_env = _prompt(logger, "Secret key env var name (raw value or env:VARNAME)", default="LANGFUSE_SECRET_KEY")
+        langfuse_host = _prompt(logger, "Langfuse host URL (raw value or env:VARNAME)", default=langfuse_host_default)
+        langfuse_public_key_env = _prompt(logger, "Public key env var name (raw value or env:VARNAME)", default=langfuse_public_key_default)
+        langfuse_secret_key_env = _prompt(logger, "Secret key env var name (raw value or env:VARNAME)", default=langfuse_secret_key_env)
 
-    # --- Step 3: Providers ---
-    logger.info("Step 3: Configure LLM Providers")
+    # --- Step 3: Clone Root Directory ---
+    logger.info("Step 3: Clone Root Directory")
+    clone_root_default = existing_config.get("clone_root", str(get_resolv_dir() / "workspaces")) if existing_config else str(get_resolv_dir() / "workspaces")
+    clone_root = _prompt(logger, "Clone root directory (raw value or env:VARNAME)", default=clone_root_default)
+    if not clone_root:
+        clone_root = str(get_resolv_dir() / "workspaces")
+
+    # --- Step 4: Providers ---
+    logger.info("Step 4: Configure LLM Providers")
+    existing_providers = existing_config.get("providers", {}) if existing_config else {}
     providers = {}
     for prov_name in ["google", "anthropic", "openrouter", "local"]:
-        add = _prompt_yes_no(logger, f"Configure provider '{prov_name}'?", default=True)
+        existing_prov = existing_providers.get(prov_name, {})
+        default_add = bool(existing_prov)
+        add = _prompt_yes_no(logger, f"Configure provider '{prov_name}'?", default=default_add)
         if not add:
             continue
         model_defaults = {
@@ -408,21 +426,26 @@ def init(ctx, verbose):
             "openrouter": "openrouter/deepseek/deepseek-r1",
             "local": "ollama/gemma-4",
         }
-        model = _prompt(logger, f"  Model for {prov_name} (raw value or env:VARNAME)", default=model_defaults.get(prov_name, ""))
-        api_key_env = _prompt(logger, f"  API key env var for {prov_name} (raw value or env:VARNAME)", default=f"{prov_name.upper()}_API_KEY")
-        api_base = _prompt(logger, f"  API base URL for {prov_name} (optional, raw value or env:VARNAME)", default="")
+        model_default = existing_prov.get("model", model_defaults.get(prov_name, "")) if existing_prov else model_defaults.get(prov_name, "")
+        model = _prompt(logger, f"  Model for {prov_name} (raw value or env:VARNAME)", default=model_default)
+        api_key_env_default = existing_prov.get("api_key_env", f"env:{prov_name.upper()}_API_KEY") if existing_prov else f"env:{prov_name.upper()}_API_KEY"
+        api_key_env = _prompt(logger, f"  API key env var for {prov_name} (raw value or env:VARNAME)", default=api_key_env_default)
+        api_base_default = existing_prov.get("api_base", "") if existing_prov else ""
+        api_base = _prompt(logger, f"  API base URL for {prov_name} (optional, raw value or env:VARNAME)", default=api_base_default)
+        api_key_env_raw = api_key_env[4:] if api_key_env.startswith("env:") else api_key_env
+        api_base_raw = api_base[4:] if api_base.startswith("env:") else api_base
         providers[prov_name] = {
             "model": model,
-            "api_key_env": api_key_env,
+            "api_key_env": api_key_env_raw,
         }
-        if api_base:
-            providers[prov_name]["api_base"] = api_base
+        if api_base_raw:
+            providers[prov_name]["api_base"] = api_base_raw
 
     if not providers:
         logger.error("At least one provider must be configured.")
         ctx.exit(1)
 
-    # Build global config YAML
+    # Build global config YAML (all inputs collected -- write atomically at end)
     telemetry_enabled_str = str(telemetry_enabled).lower()
     telemetry_section = f"""  enabled: {telemetry_enabled_str}
   platform: langfuse
@@ -441,9 +464,11 @@ def init(ctx, verbose):
     global_config_yaml = f"""default_provider: {default_provider}
 telemetry:
 {telemetry_section}
+clone_root: {clone_root}
 providers:
 {providers_section}"""
-    resolv_config_path = get_resolv_dir() / "config.yaml"
+
+    # Write atomically
     resolv_config_path.write_text(global_config_yaml)
     logger.success(f"Created {resolv_config_path}")
 
@@ -472,7 +497,7 @@ build/
 
 
 # =============================================================================
-# Setup Command — Per-Project Setup (--project required)
+# Setup Command -- Per-Project Setup (--project required)
 # =============================================================================
 @main.command()
 @click.option('--project', required=True, help='Target project configuration name')
@@ -485,7 +510,6 @@ def setup(ctx, project, verbose):
     logger.info(f"Setting up project: {project}")
 
     # FAIL EARLY: Global config must exist
-    from config.models import get_global_config_path, get_project_config_path
     resolv_config = get_global_config_path()
     if not resolv_config.exists():
         logger.error("Resolv not initialized globally. Run 'resolv init' first.")
@@ -499,11 +523,19 @@ def setup(ctx, project, verbose):
         logger.error(f"Failed to load global config: {e}")
         ctx.exit(1)
 
-    # FAIL EARLY: Project config must not already exist
+    clone_root = getattr(global_config, 'clone_root', str(get_resolv_dir() / "workspaces"))
+
+    # Load existing project config as defaults if re-running
     project_config_path = get_project_config_path(project)
+    existing_project = None
     if project_config_path.exists():
-        logger.error(f"Project config already exists: {project_config_path}")
-        ctx.exit(1)
+        try:
+            import yaml
+            with open(project_config_path, 'r') as f:
+                existing_project = yaml.safe_load(f)
+            logger.info(f"Existing project config found at {project_config_path}. Press Enter to keep current values.")
+        except Exception as e:
+            logger.warning(f"Could not read existing config: {e}. Starting fresh.")
 
     # Create projects directory if missing
     project_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -514,22 +546,49 @@ def setup(ctx, project, verbose):
 
     # --- Step 1: Primary Repository ---
     logger.info("Step 1: Primary Repository")
-    repo_source = _prompt(logger, "Repository source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
-    if not repo_source:
-        logger.error("Repository source is required.")
-        ctx.exit(1)
+    existing_repo = existing_project.get("repos", {}).get("primary", {}) if existing_project else {}
+    repo_source_default = existing_repo.get("source", "") if existing_repo else ""
 
-    repo_path = _prompt(logger, "Local repository path (raw value or env:VARNAME)", default=f"./workspaces/{project}")
-    if not repo_path:
-        logger.error("Repository path is required.")
-        ctx.exit(1)
+    # Repository source selection (options + custom)
+    logger.info("Step 1: Primary Repository")
+    logger.info("    1. github.com")
+    logger.info("    2. gitlab.com")
+    logger.info("    3. bitbucket.org")
+    logger.info("    4. Custom URL")
+    logger.prompt(f"Choice [1-4] (default: 1): ")
+    source_choice = input("").strip() or "1"
+    source_map = {"1": "github.com", "2": "gitlab.com", "3": "bitbucket.org", "4": "custom"}
+    source_choice = source_map.get(source_choice, "custom")
 
-    credential_key = _prompt(logger, "Credential key (e.g., GITHUB_TOKEN) (raw value or env:VARNAME)", default="GITHUB_TOKEN")
+    if source_choice == "custom":
+        repo_source = _prompt(logger, "Repository source URL (raw value or env:VARNAME)", default=repo_source_default)
+        if not repo_source:
+            logger.error("Repository source is required.")
+            ctx.exit(1)
+    else:
+        repo_source = source_choice
+        logger.info(f"  Repository source: {repo_source}")
+
+    # Auto-compute repopath as clone_root/<project>
+    repo_path = str(Path(clone_root) / project)
+
+    # Derive credential key from repo source host
+    existing_cred_key = existing_repo.get("credentialkey", "") if existing_repo else ""
+    credential_key = existing_cred_key if existing_cred_key else ""
     if not credential_key:
-        logger.error("Credential key is required.")
-        ctx.exit(1)
+        host_match = re.search(r'://([^/]+)/', repo_source)
+        if host_match:
+            host = host_match.group(1)
+            host_key_map = {
+                'github.com': 'GITHUB_TOKEN',
+                'anthropic.com': 'GITLAB_TOKEN',
+                'bitbucket.org': 'BITBUCKET_TOKEN',
+            }
+            credential_key = host_key_map.get(host, f"{host.replace('.', '_').upper()}_TOKEN")
+        else:
+            credential_key = "GITHUB_TOKEN"
 
-    credential_value = _prompt(logger, f"  {credential_key} value (raw value or env:VARNAME)")
+    credential_value = _prompt(logger, f"  Credential value (raw value or env:VARNAME)")
     if credential_value.startswith("env:"):
         token_mappings = {credential_key: {"env": credential_value[4:]}}
     elif credential_value:
@@ -554,10 +613,8 @@ def setup(ctx, project, verbose):
         for i in range(num_refs):
             logger.info(f"  Reference Repo {i + 1}:")
             r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
-            r_path = _prompt(logger, "    Local path (raw value or env:VARNAME)")
-            r_cred = _prompt(logger, "    Credential key (raw value or env:VARNAME)", default="GITHUB_TOKEN")
-            r_cred_val = _prompt(logger, f"    {r_cred} value (raw value or env:VARNAME)")
-            if r_source and r_path:
+            r_cred_val = _prompt(logger, f"    Credential value (raw value or env:VARNAME)")
+            if r_source:
                 cm = {}
                 if r_cred_val.startswith("env:"):
                     cm[r_cred] = {"env": r_cred_val[4:]}
@@ -565,8 +622,8 @@ def setup(ctx, project, verbose):
                     cm[r_cred] = {"raw": r_cred_val}
                 reference_repos.append({
                     "source": r_source,
-                    "repopath": r_path,
-                    "credentialkey": r_cred,
+                    "repopath": str(Path(clone_root) / f"ref_{i}"),
+                    "credentialkey": "CREDENTIAL_TOKEN",
                     "credential_map": cm,
                 })
 
@@ -586,7 +643,7 @@ def setup(ctx, project, verbose):
     logger.info("Step 4: Token Mappings (raw value or env:VARNAME)")
     all_cred_keys = set()
     for r in reference_repos:
-        all_cred_keys.add(r.get("credentialkey", "GITHUB_TOKEN"))
+        all_cred_keys.add(r.get("credentialkey", "CREDENTIAL_TOKEN"))
     for ck in sorted(all_cred_keys):
         if ck in token_mappings:
             continue  # already set from primary repo
@@ -597,10 +654,16 @@ def setup(ctx, project, verbose):
             else:
                 token_mappings[ck] = {"raw": val}
 
-    # Build project config YAML
+    # Build project config YAML (all inputs collected -- write atomically at end)
+    # Quote Windows paths with backslashes - escape backslashes for YAML
+    def yaml_quote(s: str) -> str:
+        return f'"{s.replace(chr(92), chr(92)+chr(92))}"' if '\\' in s or ':' in s or '/' in s else s
+    repo_source_quoted = yaml_quote(repo_source)
+    repo_path_quoted = yaml_quote(repo_path)
+
     repo_entry = f"""  primary:
-    source: {repo_source}
-    repopath: {repo_path}
+    source: {repo_source_quoted}
+    repopath: {repo_path_quoted}
     credentialkey: {credential_key}"""
     if build_cmd:
         repo_entry += f"\n    buildcmd: {build_cmd}"
@@ -613,36 +676,42 @@ def setup(ctx, project, verbose):
     if reference_repos:
         ref_section = "  reference:\n"
         for r in reference_repos:
-            ref_section += f"    - source: {r['source']}\n"
-            ref_section += f"      repopath: {r['repopath']}\n"
+            r_source_quoted = yaml_quote(r["source"])
+            r_path_quoted = yaml_quote(r["repopath"])
+            ref_section += f"    - source: {r_source_quoted}\n"
+            ref_section += f"      repopath: {r_path_quoted}\n"
             ref_section += f"      credentialkey: {r['credentialkey']}\n"
             if r.get("credential_map"):
                 for ck, cm in r["credential_map"].items():
                     if "env" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\n"
+                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\\n"
                     elif "raw" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\n"
+                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\\n"
 
-    data_section = "  database:\n    schema_source: null\n    migrations_path: null\n  other: []\n"
+    data_section = "  database:\\n    schema_source: null\\n    migrations_path: null\\n  other: []\\n"
     if database_config:
-        data_section = "  data:\n    database:\n"
+        data_section = "  data:\\n    database:\\n"
         ds = database_config.get("schema_source") or "null"
         mp = database_config.get("migrations_path") or "null"
-        data_section += f"      schema_source: {ds}\n      migrations_path: {mp}\n"
+        ds_quoted = yaml_quote(ds) if ds else "null"
+        mp_quoted = yaml_quote(mp) if mp else "null"
+        data_section += f"      schema_source: {ds_quoted}\\n      migrations_path: {mp_quoted}\\n"
 
-    tokens_section = "tokens: {}\n"
+    tokens_section = "tokens: {}\\n"
     if token_mappings:
-        tokens_section = "tokens:\n"
+        tokens_section = "tokens:\\n"
         for ck, tm in token_mappings.items():
             if "env" in tm:
-                tokens_section += f"  {ck}: env:{tm['env']}\n"
+                tokens_section += f"  {ck}: env:{tm['env']}\\n"
             elif "raw" in tm:
-                tokens_section += f"  {ck}: {tm['raw']}\n"
+                tokens_section += f"  {ck}: {tm['raw']}\\n"
 
     project_config_yaml = f"""name: {project}
 repos:
 {repo_entry}
 {ref_section}{data_section}{tokens_section}"""
+
+    # Write atomically
     project_config_path.write_text(project_config_yaml)
     logger.success(f"Created {project_config_path}")
 

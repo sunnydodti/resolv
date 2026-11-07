@@ -27,6 +27,15 @@ class PlannerAgent(BaseAgent):
         self.token_budget = 10000
         self.llm_gateway = llm_gateway
 
+    def _to_rel(self, abs_path: str, repo_root: str = "") -> str:
+        """Convert an absolute path to a path relative to repo_root."""
+        if not repo_root:
+            return abs_path
+        try:
+            return str(Path(abs_path).resolve().relative_to(Path(repo_root).resolve()))
+        except ValueError:
+            return abs_path
+
     def execute(self, context: dict) -> List[PlanStep]:
         """Synthesize context into an actionable plan using the LLM."""
         self.logger.info("Generating resolution roadmap...")
@@ -36,15 +45,6 @@ class PlannerAgent(BaseAgent):
         source_files: list = context.get("source_files", [])
         grep_matches: dict = context.get("grep_matches", {})
         repo_root: str = context.get("repo_root", "")
-
-        def _to_rel(abs_path: str) -> str:
-            """Convert an absolute path to a path relative to repo_root."""
-            if not repo_root:
-                return abs_path
-            try:
-                return str(Path(abs_path).resolve().relative_to(Path(repo_root).resolve()))
-            except ValueError:
-                return abs_path
 
         # Determine which files are relevant based on grep matches
         relevant_files: set = set()
@@ -56,75 +56,17 @@ class PlannerAgent(BaseAgent):
                     if m:
                         file_part = m.group(1)
                         if file_part:
-                            relevant_files.add(_to_rel(file_part))
+                            relevant_files.add(self._to_rel(file_part, repo_root))
             self.logger.debug(f"Relevant files from grep matches: {sorted(relevant_files)}")
 
-        # Try LLM-based planning first if gateway is available
-        if self.llm_gateway is not None and relevant_files:
-            try:
-                return self._plan_with_llm(
-                    issue, relevant_files, source_files, grep_matches, repo_root
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"LLM planning failed: {e}. Falling back to deterministic planning."
-                )
+        # LLM-based planning is required — no fallback
+        if self.llm_gateway is None:
+            self.logger.error("No LLM gateway available for planning")
+            raise ValueError("PlannerAgent requires an LLM gateway — no fallback allowed")
 
-        # Deterministic fallback planning
-        plan: List[PlanStep] = []
-        step_id = 1
-
-        if relevant_files:
-            for file_path in sorted(relevant_files):
-                rel_path = file_path
-                self.logger.debug(f"Planning edit step for grep-relevant file: {rel_path}")
-                plan.append(PlanStep(
-                    step_id=step_id,
-                    action="edit_file",
-                    target_file=rel_path,
-                    description=f"Apply issue-related changes to {rel_path}",
-                    estimated_tokens=1500,
-                ))
-                step_id += 1
-
-        # Fallback: if no grep matches but we have source files with symbols, plan for those
-        elif source_files:
-            files_with_symbols = {
-                s.get("file", "") for s in symbols
-                if s.get("functions") or s.get("classes")
-            }
-            target_files = sorted(files_with_symbols) if files_with_symbols else sorted(source_files)
-            for file_path in target_files:
-                rel_path = _to_rel(file_path)
-                self.logger.debug(f"Planning edit step for symbol-bearing file: {rel_path}")
-                plan.append(PlanStep(
-                    step_id=step_id,
-                    action="edit_file",
-                    target_file=rel_path,
-                    description=f"Apply issue-related changes to {rel_path}",
-                    estimated_tokens=1500,
-                ))
-                step_id += 1
-
-        # Last-resort fallback: single generic step targeting the issue reference
-        if not plan:
-            self.logger.warning(
-                f"No source files or grep matches found for issue '{issue}'; "
-                "generating generic analyze step"
-            )
-            plan.append(PlanStep(
-                step_id=1,
-                action="analyze_symbols",
-                target_file=issue,
-                description="Analyze issue-related code symbols",
-                estimated_tokens=1000,
-            ))
-
-        self.logger.info(f"Plan generated with {len(plan)} steps")
-        for step in plan:
-            self.logger.debug(f"  step {step.step_id}: {step.action} -> {step.target_file} ({step.description})")
-        self.logger.success(f"Plan generated with {len(plan)} steps")
-        return plan
+        return self._plan_with_llm(
+            issue, relevant_files, source_files, grep_matches, repo_root
+        )
 
     def _plan_with_llm(
         self,
@@ -138,7 +80,7 @@ class PlannerAgent(BaseAgent):
         # Build a concise summary of grep matches for the LLM
         match_summary = []
         for path, matches in grep_matches.items():
-            rel_path = _to_rel(path) if path else path
+            rel_path = self._to_rel(path, repo_root) if path else path
             for match in matches[:5]:  # Limit to first 5 matches per file
                 match_summary.append(f"  {rel_path}: {match[:200]}")
 
@@ -199,7 +141,7 @@ Only include files that genuinely need changes. Output ONLY the JSON array, no m
             if "worktrees" in tf:
                 self.logger.warning(f"Skipping worktree-internal path: {tf}")
                 continue
-            rel = _to_rel(tf)
+            rel = self._to_rel(tf, repo_root)
             plan.append(PlanStep(
                 step_id=s.step_id,
                 action=s.action,
@@ -209,8 +151,8 @@ Only include files that genuinely need changes. Output ONLY the JSON array, no m
             ))
 
         if not plan:
-            self.logger.warning("LLM returned no valid plan steps; using deterministic fallback")
-            # Fall through to deterministic below
+            self.logger.error("LLM returned no valid plan steps")
+            raise ValueError("LLM planning produced no valid plan steps — no fallback allowed")
 
         self.logger.info(f"LLM plan generated with {len(plan)} steps")
         for step in plan:

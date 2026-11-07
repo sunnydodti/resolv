@@ -153,6 +153,8 @@ class LiteLLMGateway(BaseAgent):
 
         provider_cfg = self.providers[provider_name]
         model_name = model or provider_cfg.model
+        # Prefix model with provider for litellm routing (e.g. "openrouter/model")
+        litellm_model = f"{provider_name}/{model_name}"
 
         # Resolve API key — FAIL EARLY if missing
         try:
@@ -194,7 +196,7 @@ class LiteLLMGateway(BaseAgent):
         try:
             client = from_litellm(litellm.completion)
             response: T = client.chat.completions.create(
-                model=model_name,
+                model=litellm_model,
                 messages=[{"role": "user", "content": prompt}],
                 response_model=response_model,
                 temperature=temperature,
@@ -251,6 +253,8 @@ class LiteLLMGateway(BaseAgent):
 
         provider_cfg = self.providers[provider_name]
         model_name = model or provider_cfg.model
+        # Prefix model with provider for litellm routing (e.g. "openrouter/model")
+        litellm_model = f"{provider_name}/{model_name}"
 
         # Resolve API key — FAIL EARLY if missing
         try:
@@ -287,7 +291,7 @@ class LiteLLMGateway(BaseAgent):
 
         try:
             response = litellm.completion(
-                model=model_name,
+                model=litellm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -324,3 +328,26 @@ class LiteLLMGateway(BaseAgent):
             )
             self.logger.error(f"LLM text call failed: {provider_name}/{model_name} — {e}")
             raise
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """BaseAgent abstract method — delegates to execute_structured."""
+        if not args:
+            raise ValueError("execute() requires a prompt as first argument")
+        prompt = args[0]
+        response_model = kwargs.get("response_model")
+        if response_model:
+            return self.execute_structured(
+                prompt=prompt,
+                response_model=response_model,
+                provider=kwargs.get("provider"),
+                model=kwargs.get("model"),
+                temperature=kwargs.get("temperature", 0.1),
+                max_tokens=kwargs.get("max_tokens"),
+            )
+        return self.execute_text(
+            prompt=prompt,
+            provider=kwargs.get("provider"),
+            model=kwargs.get("model"),
+            temperature=kwargs.get("temperature", 0.1),
+            max_tokens=kwargs.get("max_tokens"),
+        )

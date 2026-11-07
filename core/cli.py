@@ -10,6 +10,7 @@ import re
 import uuid
 import json
 import yaml
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -234,6 +235,46 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
         logger.error(f"Invalid issue reference: '{issue_reference}'")
         logger.info("Expected formats: https://github.com/org/repo/issues/123, #123, 123, PROJ-123")
         ctx.exit(1)
+
+    # Pre-flight: verify the GitHub issue actually exists before running any pipeline stage
+    if issue_reference.startswith("http://") or issue_reference.startswith("https://"):
+        parsed = parse_repo_source(issue_reference.split("/issues/")[0])
+        issue_number = issue_reference.split("/issues/")[-1].split("/")[0].split("?")[0]
+        if not parsed or not issue_number.isdigit():
+            logger.error(f"Could not parse issue reference: '{issue_reference}'")
+            ctx.exit(1)
+        base, path = parsed
+        # path is like "org/repo"
+        repo_parts = path.split("/")
+        if len(repo_parts) < 2:
+            logger.error(f"Could not parse repo path from issue reference: '{issue_reference}'")
+            ctx.exit(1)
+        owner, repo = repo_parts[0], repo_parts[1]
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+        logger.info(f"Verifying issue exists: {api_url}")
+        try:
+            resp = requests.get(api_url, timeout=15, headers={"Accept": "application/vnd.github.v3+json"})
+            if resp.status_code == 404:
+                logger.error(
+                    f"GitHub issue not found: {issue_reference} "
+                    f"(GET {api_url} returned 404). "
+                    "Verify the issue URL is correct and the repository is accessible."
+                )
+                ctx.exit(1)
+            elif resp.status_code != 200:
+                logger.error(
+                    f"GitHub API returned {resp.status_code} for {api_url}. "
+                    "Check your network and GitHub access."
+                )
+                ctx.exit(1)
+            else:
+                logger.success(f"Issue {issue_reference} exists on GitHub")
+        except requests.exceptions.RequestException as e:
+            logger.error(
+                f"Cannot reach GitHub API at {api_url}: {e}. "
+                "Check your network connection and try again."
+            )
+            ctx.exit(1)
 
     # Load global config (fail fast)
     try:

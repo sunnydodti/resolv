@@ -24,6 +24,32 @@ class LocalGitSubAgent(SubAgent):
         super().__init__(logger, config)
         self.worktree_root = Path("worktrees")
 
+    def clean_unstaged_changes(self, worktree_path: str | Path) -> None:
+        """
+        Remove any unstaged changes in the worktree to ensure a clean state
+        before applying new code edits. Prevents 'cannot pull with rebase'
+        and merge conflicts from previous runs.
+        """
+        wt = Path(worktree_path)
+        if not wt.exists():
+            return
+        try:
+            self._run_git(
+                ["git", "checkout", "--", "."],
+                repo_path=wt,
+                operation="checkout -- .",
+            )
+            self._run_git(
+                ["git", "clean", "-fd"],
+                repo_path=wt,
+                operation="clean -fd",
+            )
+            self.logger.debug(f"Cleaned unstaged changes in {worktree_path}")
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(
+                f"Could not clean unstaged changes in {worktree_path}: {e.stderr.strip() if e.stderr else e}"
+            )
+
     def _git_dir_args(self, repo_path: Path) -> List[str]:
         """Build --git-dir and --work-tree args to avoid cwd permission issues on Windows."""
         return [

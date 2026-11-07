@@ -83,7 +83,22 @@ def resolve_config_value(
         if credential_store is not None:
             store_val = credential_store.get_raw(ref or "")
             if store_val:
+                import os as _os
+                import logging as _logging
+                _logging.getLogger("resolv.credentials").debug(
+                    f"cred:{ref} -> store_val={store_val!r}, env={_os.getenv(ref, '')!r}"
+                )
                 return resolve_config_value(store_val, credential_store)
+            else:
+                import logging as _logging
+                _logging.getLogger("resolv.credentials").debug(
+                    f"cred:{ref} -> NOT FOUND in credential store"
+                )
+        else:
+            import logging as _logging
+            _logging.getLogger("resolv.credentials").debug(
+                f"cred:{ref} -> credential_store is None"
+            )
 
     # Prefix matched but resolved to empty -> error per spec.
     raise ValueError(f"Could not resolve config value: {value}")

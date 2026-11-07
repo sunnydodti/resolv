@@ -290,17 +290,35 @@ def stage_2_plan(state: ResolvState) -> ResolvState:
 
     # Create LLM gateway and select provider
     from agents.llm_gateway import LiteLLMGateway
-    from config.models import CredentialsStore
+    from config.models import CredentialsStore, GlobalConfig, ProviderConfig
     cred_store = CredentialsStore()
-    state_creds = state.get("credentials_store")
+    # Try credentials_store first (set by stage 0), fall back to credentials (from cli.py initial state)
+    state_creds = state.get("credentials_store") or state.get("credentials")
+    logger.debug(f"credentials_store in state: {bool(state_creds)}")
     if state_creds:
+        logger.debug(f"credentials_store keys: {list(state_creds.get('credentials', {}).keys())}")
         for key, val in state_creds.get("credentials", {}).items():
             cred_store.add(
                 key=val.get("key", key),
                 value=val.get("value"),
                 env_ref=val.get("env_ref")
             )
-    llm_gateway = LiteLLMGateway(logger, project_config, credential_store=cred_store)
+    logger.debug(f"cred_store keys after rebuild: {list(cred_store.credentials.keys())}")
+    # Reconstruct GlobalConfig from stored dict (state stores model_dump())
+    gc_dict = state.get("global_config", {})
+    if isinstance(gc_dict, dict):
+        providers = {}
+        for name, prov in gc_dict.get("providers", {}).items():
+            providers[name] = ProviderConfig(**prov)
+        global_config = GlobalConfig(
+            default_provider=gc_dict.get("default_provider", "openrouter"),
+            telemetry=gc_dict.get("telemetry", {}),
+            providers=providers,
+            clone_root=gc_dict.get("clone_root"),
+        )
+    else:
+        global_config = gc_dict
+    llm_gateway = LiteLLMGateway(logger, global_config, credential_store=cred_store)
     selected_provider = state.get("selected_provider")
     if selected_provider:
         llm_gateway.select_provider(selected_provider)
@@ -362,17 +380,36 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
 
     # Create LLM gateway and select provider for code synthesis
     from agents.llm_gateway import LiteLLMGateway
-    from config.models import CredentialsStore
+    from config.models import CredentialsStore, GlobalConfig, ProviderConfig
     cred_store = CredentialsStore()
-    state_creds = state.get("credentials_store")
+    # Try credentials_store first (set by stage 0), fall back to credentials (from cli.py initial state)
+    state_creds = state.get("credentials_store") or state.get("credentials")
+    logger.debug(f"credentials_store in state: {bool(state_creds)}")
     if state_creds:
+        logger.debug(f"credentials_store keys: {list(state_creds.get('credentials', {}).keys())}")
         for key, val in state_creds.get("credentials", {}).items():
             cred_store.add(
                 key=val.get("key", key),
                 value=val.get("value"),
                 env_ref=val.get("env_ref")
             )
-    llm_gateway = LiteLLMGateway(logger, project_config, credential_store=cred_store)
+    logger.debug(f"cred_store keys after rebuild: {list(cred_store.credentials.keys())}")
+
+    # Reconstruct GlobalConfig from stored dict (state stores model_dump())
+    gc_dict = state.get("global_config", {})
+    if isinstance(gc_dict, dict):
+        providers = {}
+        for name, prov in gc_dict.get("providers", {}).items():
+            providers[name] = ProviderConfig(**prov)
+        global_config = GlobalConfig(
+            default_provider=gc_dict.get("default_provider", "openrouter"),
+            telemetry=gc_dict.get("telemetry", {}),
+            providers=providers,
+            clone_root=gc_dict.get("clone_root"),
+        )
+    else:
+        global_config = gc_dict
+    llm_gateway = LiteLLMGateway(logger, global_config, credential_store=cred_store)
     selected_provider = state.get("selected_provider")
     if selected_provider:
         llm_gateway.select_provider(selected_provider)
@@ -391,6 +428,9 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
 
     # Create worktree
     worktree_path = coding_agent.git_tool.init_session_workspace(primary_repo, feature_branch)
+
+    # Clean any unstaged changes from previous runs to avoid conflicts
+    coding_agent.git_tool.clean_unstaged_changes(worktree_path)
 
     # Apply planned edits
     from agents.coding_agent import PatchResult

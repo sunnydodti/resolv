@@ -73,6 +73,14 @@ class ContextAgent(BaseAgent):
         self.logger.info(f"Analyzing issue: {issue_reference}")
         context: Dict[str, Any] = {
             "issue": issue_reference,
+            "issue_summary": f"Auto-resolving issue: {issue_reference}",
+            "affected_files": [],
+            "required_changes": [],
+            "extracted_symbols": [],
+            "dependency_graph": {},
+            "database_schema": {},
+            "token_budget_used": 0,
+            "token_budget_remaining": 0,
             "symbols": [],
             "schemas": {},
             "source_files": [],
@@ -113,5 +121,40 @@ class ContextAgent(BaseAgent):
             f"Context gathering complete — {len(context['source_files'])} source files, "
             f"{total_symbols} symbols/functions/classes across {len(context['symbols'])} parsed files"
         )
+
+        # Populate fields expected by analysis.md
+        affected = context.get("affected_files", [])
+        if not affected:
+            # Use grep-matched files as affected files
+            matched = set()
+            for _path, matches in context.get("grep_matches", {}).items():
+                for match in matches:
+                    # match format: "absolute_path:line:content"
+                    # Use rsplit from right because Windows paths contain colons (C:\...)
+                    parts = match.rsplit(":", 2)
+                    if len(parts) >= 2:
+                        file_part = parts[0]
+                        if file_part:
+                            matched.add(file_part)
+            affected = sorted(matched)
+            context["affected_files"] = affected
+
+        required = context.get("required_changes", [])
+        if not required and affected:
+            context["required_changes"] = [f"Apply issue-related changes to {f}" for f in affected]
+
+        symbols_list = context.get("symbols", [])
+        extracted = context.get("extracted_symbols", [])
+        if not extracted and symbols_list:
+            context["extracted_symbols"] = [
+                {
+                    "name": s.get("file", "").split("\\")[-1].split("/")[-1],
+                    "type": "file",
+                    "file": s.get("file", ""),
+                    "line": 0,
+                }
+                for s in symbols_list
+            ]
+
         self.logger.success("Context gathering complete")
         return context

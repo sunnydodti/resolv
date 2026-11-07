@@ -2,8 +2,9 @@ from pydantic import BaseModel
 from agents.base import BaseAgent
 from core.logger import ResolvLogger
 from agents.tools.local_git import LocalGitSubAgent
-from typing import List
+from typing import List, Tuple, Optional
 from pathlib import Path
+import re
 import json
 
 
@@ -16,132 +17,106 @@ class PatchResult(BaseModel):
 class CodingAgent(BaseAgent):
     """
     Applies code changes and synthesizes self-healing patches.
-    Uses the LLM gateway to generate actual code changes based on plan steps
-    and file contents. Falls back to deterministic edits if LLM is unavailable.
+    Uses the LLM gateway to generate targeted code changes based on plan steps.
+    Operates on logical code blocks (functions/classes) rather than full files
+    to minimize token usage and maximize edit accuracy.
     """
+
+    # Patterns for function/class definitions across C-style and Python-like languages
+    _BLOCK_START_PATTERNS = [
+        r'^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)',       # JS/TS function
+        r'^\s*(?:export\s+)?(?:async\s+)?def\s+(\w+)',            # Python def
+        r'^\s*(?:export\s+)?class\s+(\w+)',                        # class
+        r'^\s*(?:export\s+)?(?:public|private|protected)\s+(?:async\s+)?(?:function\s+)?(\w+)\s*\(',  # method-like
+    ]
 
     def __init__(self, logger: ResolvLogger, config, llm_gateway=None):
         super().__init__(logger, config)
         self.git_tool = LocalGitSubAgent(logger, config)
         self.llm_gateway = llm_gateway
 
-    def _apply_edit_to_file(
-        self, worktree: Path, target_file: str, description: str
-    ) -> bool:
+    # ------------------------------------------------------------------
+    # Block parsing (language-agnostic)
+    # ------------------------------------------------------------------
+    def _parse_blocks(self, content: str) -> List[Tuple[int, int, str]]:
         """
-        Apply a deterministic edit to a source file based on the plan step description.
+        Parse file content into logical blocks (functions/classes).
 
-        Returns True if the file was modified, False if no change was applicable.
+        Returns a list of (start_line, end_line, block_text) tuples.
+        Blocks are non-overlapping and cover the entire file.
+        Lines before the first definition form block 0.
         """
-        file_path = worktree / target_file
-        if not file_path.exists():
-            self.logger.warning(f"Target file does not exist: {target_file}")
-            return False
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                original = f.read()
-        except Exception as e:
-            self.logger.warning(f"Could not read {target_file}: {e}")
-            return False
-
-        modified = self._synthesize_change(original, target_file, description)
-        if modified is None or modified == original:
-            self.logger.debug(f"No applicable change for {target_file}")
-            return False
-
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(modified)
-            self.logger.info(f"Applied edit to {target_file}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to write {target_file}: {e}")
-            return False
-
-    def _synthesize_change(
-        self, content: str, target_file: str, description: str
-    ) -> str | None:
-        """
-        Synthesize a code change for a file based on the plan step description.
-
-        Returns the modified content, or None if no change is applicable.
-        """
-        desc_lower = (description or "").lower()
         lines = content.split("\n")
-        modified = False
+        block_starts: List[int] = []
 
-        # --- Deterministic transformations ---
-
-        # 1. Add missing route registration (routes.ts)
-        if target_file.endswith("routes.ts") and "add route" in desc_lower:
-            for i, line in enumerate(lines):
-                if 'routes.post("/shorten"' in line:
-                    indent = "    "
-                    new_route = f'{indent}routes.get("/resolve/:shortCode", redirectUrl);'
-                    lines.insert(i + 1, new_route)
-                    modified = True
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for pattern in self._BLOCK_START_PATTERNS:
+                if re.match(pattern, line):
+                    block_starts.append(i)
                     break
 
-        # 2. Add missing import
-        if "add import" in desc_lower or "missing import" in desc_lower:
-            last_import_idx = -1
-            for i, line in enumerate(lines):
-                if line.startswith("import ") or line.startswith("from "):
-                    last_import_idx = i
-            if last_import_idx >= 0:
-                if "zara" in desc_lower and "zara" not in content:
-                    lines.insert(
-                        last_import_idx + 1,
-                        "export async function zara(c: Context) { ... }",
-                    )
-                    modified = True
+        if not block_starts:
+            # No definitions found — whole file is one block
+            return [(0, len(lines), content)]
 
-        # 3. Fix validation - ensure shortCode length check exists (service.ts)
-        if target_file.endswith("service.ts") and "validation" in desc_lower:
-            if "shortCode.length" not in content:
-                for i, line in enumerate(lines):
-                    if "shortCode =" in line and "await getUniqueShortUrl" in line:
-                        lines.insert(
-                            i,
-                            '        if (shortCode.length < 3 || shortCode.length > 50) return c.json({ "error": "invalid short code" }, 400);',
-                        )
-                        modified = True
-                        break
+        blocks: List[Tuple[int, int, str]] = []
+        # Block 0: everything before the first definition
+        if block_starts[0] > 0:
+            blocks.append((0, block_starts[0], "\n".join(lines[:block_starts[0]])))
 
-        # 4. Add error handling stub for missing function (service.ts)
-        if target_file.endswith("service.ts") and "function not found" in desc_lower:
-            stub = """
+        # Blocks for each definition
+        for idx, start in enumerate(block_starts):
+            end = block_starts[idx + 1] if idx + 1 < len(block_starts) else len(lines)
+            block_text = "\n".join(lines[start:end])
+            blocks.append((start, end, block_text))
 
-// Auto-resolved by Resolv: stub function added
-export async function stubHandler(c: Context) {
-    return c.json({ "error": "not implemented" }, 501);
-}
-"""
-            lines.append(stub)
-            modified = True
+        return blocks
 
-        # 5. Add a Resolv change log comment at top of file (generic fallback)
-        if not modified:
-            resolv_marker = "// Resolv-auto-resolved"
-            if resolv_marker not in content:
-                issue_ref = description.split("->")[-1].strip() if "->" in description else "issue"
-                header = f"// Resolv-auto-resolved: {issue_ref}\n"
-                lines.insert(0, header)
-                modified = True
-
-        if not modified:
+    def _find_matching_block(
+        self, blocks: List[Tuple[int, int, str]], description: str
+    ) -> Optional[Tuple[int, int, str]]:
+        """
+        Find the block that best matches the plan step description.
+        Matches keywords from the description against block content.
+        """
+        if not blocks:
             return None
 
-        return "\n".join(lines)
+        desc_words = set(
+            w.lower()
+            for w in re.split(r"[^a-zA-Z0-9_]+", description or "")
+            if len(w) > 3
+        )
+        if not desc_words:
+            return None
 
+        best_block: Optional[Tuple[int, int, str]] = None
+        best_score = 0
+
+        for block in blocks:
+            block_text_lower = block[2].lower()
+            score = sum(1 for w in desc_words if w in block_text_lower)
+            if score > best_score:
+                best_score = score
+                best_block = block
+
+        return best_block if best_score > 0 else None
+
+    # ------------------------------------------------------------------
+    # LLM-based block editing (Option A)
+    # ------------------------------------------------------------------
     def _synthesize_with_llm(
         self, worktree: Path, target_file: str, description: str
     ) -> bool:
         """
-        Use the LLM gateway to generate actual code changes for a file.
-        Reads the file, sends it to the LLM with the plan description,
-        applies the LLM's suggested changes.
+        Use the LLM gateway to generate targeted code changes for a logical block.
+
+        Reads the file, parses it into blocks, finds the block matching the
+        plan description, sends that block (with context) to the LLM, and
+        applies the LLM's modified block back to the file.
         """
         file_path = worktree / target_file
         if not file_path.exists():
@@ -159,45 +134,83 @@ export async function stubHandler(c: Context) {
             self.logger.warning(f"Target file is empty: {target_file}")
             return False
 
-        # Truncate large files to stay within token limits
-        max_chars = 12000
-        if len(original) > max_chars:
-            original = original[:max_chars] + "\n... (truncated)"
+        blocks = self._parse_blocks(original)
+        self.logger.debug(f"Parsed {len(blocks)} blocks from {target_file}")
 
-        prompt = f"""You are a software engineer fixing a GitHub issue. Below is the full content of a source file and a description of the change needed.
+        # Find the block that matches the plan description
+        target_block = self._find_matching_block(blocks, description)
+
+        if target_block is None:
+            # No specific block matched — fall back to whole file (one LLM call)
+            self.logger.debug(
+                f"No block matched description for {target_file}; using whole file"
+            )
+            block_text = original
+            block_start = 0
+            block_end = len(original.split("\n"))
+        else:
+            block_start, block_end, block_text = target_block
+            self.logger.debug(
+                f"Using block lines {block_start + 1}-{block_end} for {target_file}"
+            )
+
+        # Build context: the block plus surrounding lines (3 before, 3 after)
+        lines = original.split("\n")
+        context_start = max(0, block_start - 3)
+        context_end = min(len(lines), block_end + 3)
+        context_lines = lines[context_start:context_end]
+        context_text = "\n".join(context_lines)
+
+        # Truncate if too large
+        max_chars = 10000
+        if len(context_text) > max_chars:
+            context_text = context_text[:max_chars] + "\n... (truncated)"
+
+        prompt = f"""You are a software engineer fixing a GitHub issue. Below is a code block from a source file and a description of the change needed.
 
 FILE: {target_file}
+BLOCK LINES: {block_start + 1}-{block_end}
 CHANGE NEEDED: {description}
 
-CURRENT FILE CONTENTS:
+CURRENT BLOCK CONTENTS (lines {context_start + 1}-{context_end} of the file):
 ```
-{original}
+{context_text}
 ```
 
-TASK: Produce the COMPLETE modified file content that implements the requested change. Output ONLY the full file contents — no markdown fences, no explanations, no extra text. The output must be valid source code that can be written directly to disk.
-
-If no change is needed, output the original content unchanged."""
+TASK: Produce the COMPLETE modified block content that implements the requested change.
+- Output ONLY the modified block content — no markdown fences, no explanations.
+- Preserve the exact indentation and style of the original block.
+- The output must be valid source code that can replace the original block directly.
+- If no change is needed, output the original block content unchanged."""
 
         self.logger.debug(f"LLM coding prompt length: {len(prompt)} chars for {target_file}")
 
         from pydantic import BaseModel as _BaseModel
 
-        class _FileEdit(_BaseModel):
+        class _BlockEdit(_BaseModel):
             file_path: str
-            new_content: str
+            new_block_content: str
 
         try:
             response = self.llm_gateway.execute_structured(
                 prompt=prompt,
-                response_model=_FileEdit,
+                response_model=_BlockEdit,
                 temperature=0.1,
-                max_tokens=8000,
+                max_tokens=6000,
             )
 
-            new_content = response.new_content
-            if not new_content or new_content.strip() == original.strip():
-                self.logger.debug(f"LLM produced no meaningful change for {target_file}")
+            new_block = response.new_block_content
+            if not new_block or new_block.strip() == block_text.strip():
+                self.logger.debug(f"LLM produced no meaningful change for {target_file} block")
                 return False
+
+            # Replace the block in the original content
+            new_lines = (
+                lines[:block_start]
+                + [new_block]
+                + lines[block_end:]
+            )
+            new_content = "\n".join(new_lines)
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
@@ -205,11 +218,11 @@ If no change is needed, output the original content unchanged."""
             return True
 
         except Exception as e:
-            self.logger.warning(
-                f"LLM code synthesis failed for {target_file}: {e}. "
-                "Falling back to deterministic edits."
+            self.logger.error(
+                f"LLM code synthesis failed for {target_file}: {e}"
             )
-            return False
+            # NO FALLBACK — fail early per requirements
+            raise
 
     def execute(self, plan_steps: list, worktree_path: str) -> PatchResult:
         """Apply structured edits based on plan steps."""
@@ -217,7 +230,11 @@ If no change is needed, output the original content unchanged."""
         modified_files = []
         worktree = Path(worktree_path)
 
-        # Deterministic patch application based on plan
+        # LLM-based code synthesis is required — no fallback
+        if self.llm_gateway is None:
+            self.logger.error("No LLM gateway available for coding")
+            raise ValueError("CodingAgent requires an LLM gateway — no fallback allowed")
+
         for step in plan_steps:
             if isinstance(step, dict):
                 action = step.get("action", "unknown")
@@ -238,15 +255,15 @@ If no change is needed, output the original content unchanged."""
                 continue
 
             if action == "edit_file":
-                # Try LLM first if available
-                applied = False
-                if self.llm_gateway is not None:
-                    applied = self._synthesize_with_llm(worktree, target_file, description)
-                # Fall back to deterministic if LLM didn't apply anything
+                applied = self._synthesize_with_llm(worktree, target_file, description)
                 if not applied:
-                    applied = self._apply_edit_to_file(worktree, target_file, description)
-                if applied:
-                    modified_files.append(target_file)
+                    self.logger.error(
+                        f"LLM did not produce a change for {target_file} — no fallback allowed"
+                    )
+                    raise RuntimeError(
+                        f"CodingAgent failed: LLM produced no change for {target_file}"
+                    )
+                modified_files.append(target_file)
             else:
                 self.logger.warning(f"Unknown action '{action}' for {target_file}, skipping")
 

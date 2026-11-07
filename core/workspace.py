@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
 
+from config.models import get_resolv_dir
+
 class WorkspaceManager:
     def __init__(self, project_name: str, issue_id: str):
-        self.root = Path(f".resolv/sessions/{project_name}/{issue_id}")
+        self.root = Path(get_resolv_dir() / "sessions" / project_name / issue_id)
         self.root.mkdir(parents=True, exist_ok=True)
     
     def get_path(self, filename: str) -> Path:

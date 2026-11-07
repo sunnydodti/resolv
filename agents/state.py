@@ -32,7 +32,7 @@ class ResolvState(TypedDict):
     session_id: str
     issue_reference: str
     project_name: str
-    session_path: str  # .resolv/sessions/<project>/<issue_id>
+    session_path: str  # ~/.resolv/sessions/<project>/<issue_id>
 
     # Lifecycle
     current_stage: str

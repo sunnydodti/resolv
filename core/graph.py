@@ -114,8 +114,8 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
 
     logger.info(f"Stage 0: Setup — Establishing isolated session workspace")
 
-    # Create session workspace
-    session_path = Path(f".resolv/sessions/{project_name}/{issue_id}")
+    # Create session workspace under Resolv home (~/.resolv/sessions/...)
+    session_path = Path(get_resolv_dir() / "sessions" / project_name / issue_id)
     session_path.mkdir(parents=True, exist_ok=True)
 
     logger.debug(f"project_name={project_name}")
@@ -127,10 +127,6 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     logger.debug(f"analysis_only={state.get('analysis_only', False)}")
     logger.debug(f"verbose={state.get('verbose', False)}")
     logger.debug(f"log_file={state.get('log_file')}")
-
-    # Create session workspace
-    session_path = Path(f".resolv/sessions/{project_name}/{issue_id}")
-    session_path.mkdir(parents=True, exist_ok=True)
 
     # Initialize metadata
     session_id = str(uuid.uuid4())

@@ -305,8 +305,8 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
     if issue_id.startswith("#"):
         issue_id = issue_id[1:]
 
-    # Build session path
-    session_path = f".resolv/sessions/{project_name}/{issue_id}"
+    # Build session path under Resolv home (~/.resolv/sessions/...)
+    session_path = str(get_resolv_dir() / "sessions" / project_name / issue_id)
     Path(session_path).mkdir(parents=True, exist_ok=True)
 
     # Set up per-session log file for silent debug review
@@ -878,7 +878,7 @@ repos:
     logger.success(f"Created {project_config_path}")
 
     # Resolve and store credentials in credentials.json
-    session_path = f".resolv/sessions/{project}/setup"
+    session_path = str(get_resolv_dir() / "sessions" / project / "setup")
     Path(session_path).mkdir(parents=True, exist_ok=True)
 
     # Save credentials to the global credential store (so `run` can resolve them).
@@ -899,7 +899,7 @@ repos:
     logger.success(f"Saved {len(credential_store.credentials)} credentials to {global_cred_path}")
 
     # Also persist a copy under the setup session for backward compatibility.
-    session_path = f".resolv/sessions/{project}/setup"
+    session_path = str(get_resolv_dir() / "sessions" / project / "setup")
     Path(session_path).mkdir(parents=True, exist_ok=True)
     cred_agent.save_to_session(session_path, credential_store)
     logger.success(f"Saved credentials to {session_path}/credentials.json")

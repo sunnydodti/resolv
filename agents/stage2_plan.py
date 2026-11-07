@@ -1,6 +1,6 @@
 from agents.planner_agent import PlannerAgent
 from core.logger import ResolvLogger
-from config.models import load_global_config
+from config.models import load_global_config, get_resolv_dir
 import json
 from pathlib import Path
 
@@ -16,7 +16,8 @@ def run_stage_2(logger: ResolvLogger, context: dict, project_config):
     # Convert Pydantic models to dict for serialization
     plan_data = [step.model_dump() for step in plan_steps]
     
-    session_path = Path(".resolv/sessions/temp")
+    # Save dual-representation artifacts under Resolv home
+    session_path = Path(get_resolv_dir() / "sessions" / "temp")
     session_path.mkdir(parents=True, exist_ok=True)
     
     with open(session_path / "plan.json", "w") as f:

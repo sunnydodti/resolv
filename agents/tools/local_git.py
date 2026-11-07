@@ -22,7 +22,7 @@ class LocalGitSubAgent(SubAgent):
 
     def __init__(self, logger: ResolvLogger, config):
         super().__init__(logger, config)
-        self.worktree_root = Path(".resolv/worktrees")
+        self.worktree_root = Path("worktrees")
 
     def _git_dir_args(self, repo_path: Path) -> List[str]:
         """Build --git-dir and --work-tree args to avoid cwd permission issues on Windows."""

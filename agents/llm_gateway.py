@@ -3,8 +3,11 @@ LiteLLM Gateway with Instructor integration.
 Provides schema-validated LLM calls with NO fallback (fail-fast per requirements).
 Provider MUST be explicitly selected via CLI menu. No auto-selection, no defaults.
 """
+import json
 import os
 import litellm
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Type, TypeVar, Optional, List, Dict, Any
 from pydantic import BaseModel
 
@@ -13,6 +16,26 @@ from core.logger import ResolvLogger
 from config.models import GlobalConfig, ProviderConfig, CredentialsStore, resolve_config_value
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _log_llm_call(logger: ResolvLogger, log_file: Optional[str], direction: str,
+                  provider: str, model: str, data: dict):
+    """Write LLM call input/output to the session log file for audit/review."""
+    if not log_file:
+        return
+    try:
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "direction": direction,  # "request" or "response"
+            "provider": provider,
+            "model": model,
+            "data": data,
+        }
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        # Logging must never break the LLM call
+        pass
 
 
 class LiteLLMGateway(BaseAgent):
@@ -153,6 +176,21 @@ class LiteLLMGateway(BaseAgent):
             f"prompt_len={len(prompt)}, response_model={response_model.__name__}"
         )
 
+        # Log LLM request
+        _log_llm_call(
+            self.logger,
+            getattr(self.logger, "log_file", None),
+            "request",
+            provider_name,
+            model_name,
+            {
+                "prompt": prompt,
+                "response_model": response_model.__name__,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+        )
+
         try:
             client = from_litellm(litellm.completion)
             response: T = client.chat.completions.create(
@@ -163,9 +201,31 @@ class LiteLLMGateway(BaseAgent):
                 max_tokens=max_tokens,
             )
             self.logger.success(f"LLM call succeeded: {provider_name}/{model_name}")
+
+            # Log LLM response
+            _log_llm_call(
+                self.logger,
+                getattr(self.logger, "log_file", None),
+                "response",
+                provider_name,
+                model_name,
+                {
+                    "response": response.model_dump() if hasattr(response, "model_dump") else str(response),
+                    "response_model": response_model.__name__,
+                },
+            )
             return response
 
         except Exception as e:
+            # Log LLM error
+            _log_llm_call(
+                self.logger,
+                getattr(self.logger, "log_file", None),
+                "error",
+                provider_name,
+                model_name,
+                {"error": str(e), "error_type": type(e).__name__},
+            )
             self.logger.error(f"LLM call failed: {provider_name}/{model_name} — {e}")
             # NO FALLBACK — fail early per requirements
             raise
@@ -210,6 +270,21 @@ class LiteLLMGateway(BaseAgent):
 
         self.logger.debug(f"LLM text call: provider={provider_name}, model={model_name}")
 
+        # Log LLM text request
+        _log_llm_call(
+            self.logger,
+            getattr(self.logger, "log_file", None),
+            "request",
+            provider_name,
+            model_name,
+            {
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "type": "text",
+            },
+        )
+
         try:
             response = litellm.completion(
                 model=model_name,
@@ -222,8 +297,30 @@ class LiteLLMGateway(BaseAgent):
                 self.logger.error(f"LLM returned empty content for {provider_name}/{model_name}")
                 raise ValueError("Empty LLM response")
             self.logger.success(f"LLM text call succeeded: {provider_name}/{model_name}")
+
+            # Log LLM text response
+            _log_llm_call(
+                self.logger,
+                getattr(self.logger, "log_file", None),
+                "response",
+                provider_name,
+                model_name,
+                {
+                    "response": content,
+                    "type": "text",
+                },
+            )
             return content
 
         except Exception as e:
+            # Log LLM error
+            _log_llm_call(
+                self.logger,
+                getattr(self.logger, "log_file", None),
+                "error",
+                provider_name,
+                model_name,
+                {"error": str(e), "error_type": type(e).__name__, "type": "text"},
+            )
             self.logger.error(f"LLM text call failed: {provider_name}/{model_name} — {e}")
             raise

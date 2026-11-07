@@ -288,8 +288,26 @@ def stage_2_plan(state: ResolvState) -> ResolvState:
     logger.debug(f"symbols count={len(context_data.get('symbols', [])) if isinstance(context_data, dict) else 'N/A'}")
     logger.debug(f"source_files count={len(context_data.get('source_files', [])) if isinstance(context_data, dict) else 'N/A'}")
 
+    # Create LLM gateway and select provider
+    from agents.llm_gateway import LiteLLMGateway
+    from config.models import CredentialsStore
+    cred_store = CredentialsStore()
+    state_creds = state.get("credentials_store")
+    if state_creds:
+        for key, val in state_creds.get("credentials", {}).items():
+            cred_store.add(
+                key=val.get("key", key),
+                value=val.get("value"),
+                env_ref=val.get("env_ref")
+            )
+    llm_gateway = LiteLLMGateway(logger, project_config, credential_store=cred_store)
+    selected_provider = state.get("selected_provider")
+    if selected_provider:
+        llm_gateway.select_provider(selected_provider)
+        logger.info(f"LLM provider selected for planning: {selected_provider}")
+
     from agents.planner_agent import PlannerAgent
-    planner = PlannerAgent(logger, project_config)
+    planner = PlannerAgent(logger, project_config, llm_gateway=llm_gateway)
     plan_steps = planner.execute(context_data)
 
     # Convert Pydantic models to dict for serialization
@@ -342,8 +360,26 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
     for i, step in enumerate(plan_steps[:10] if isinstance(plan_steps, list) else []):
         logger.debug(f"  plan step {i}: {step}")
 
+    # Create LLM gateway and select provider for code synthesis
+    from agents.llm_gateway import LiteLLMGateway
+    from config.models import CredentialsStore
+    cred_store = CredentialsStore()
+    state_creds = state.get("credentials_store")
+    if state_creds:
+        for key, val in state_creds.get("credentials", {}).items():
+            cred_store.add(
+                key=val.get("key", key),
+                value=val.get("value"),
+                env_ref=val.get("env_ref")
+            )
+    llm_gateway = LiteLLMGateway(logger, project_config, credential_store=cred_store)
+    selected_provider = state.get("selected_provider")
+    if selected_provider:
+        llm_gateway.select_provider(selected_provider)
+        logger.info(f"LLM provider selected for coding: {selected_provider}")
+
     from agents.coding_agent import CodingAgent
-    coding_agent = CodingAgent(logger, project_config)
+    coding_agent = CodingAgent(logger, project_config, llm_gateway=llm_gateway)
 
     # Resolve primary repo path
     primary_repo = "./"

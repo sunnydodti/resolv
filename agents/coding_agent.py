@@ -4,6 +4,7 @@ from core.logger import ResolvLogger
 from agents.tools.local_git import LocalGitSubAgent
 from typing import List
 from pathlib import Path
+import json
 
 
 class PatchResult(BaseModel):
@@ -15,12 +16,14 @@ class PatchResult(BaseModel):
 class CodingAgent(BaseAgent):
     """
     Applies code changes and synthesizes self-healing patches.
-    Hybrid agent: uses AI for patch synthesis, deterministic for git diff fallback.
+    Uses the LLM gateway to generate actual code changes based on plan steps
+    and file contents. Falls back to deterministic edits if LLM is unavailable.
     """
 
-    def __init__(self, logger: ResolvLogger, config):
+    def __init__(self, logger: ResolvLogger, config, llm_gateway=None):
         super().__init__(logger, config)
         self.git_tool = LocalGitSubAgent(logger, config)
+        self.llm_gateway = llm_gateway
 
     def _apply_edit_to_file(
         self, worktree: Path, target_file: str, description: str
@@ -132,6 +135,82 @@ export async function stubHandler(c: Context) {
 
         return "\n".join(lines)
 
+    def _synthesize_with_llm(
+        self, worktree: Path, target_file: str, description: str
+    ) -> bool:
+        """
+        Use the LLM gateway to generate actual code changes for a file.
+        Reads the file, sends it to the LLM with the plan description,
+        applies the LLM's suggested changes.
+        """
+        file_path = worktree / target_file
+        if not file_path.exists():
+            self.logger.warning(f"Target file does not exist: {target_file}")
+            return False
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+        except Exception as e:
+            self.logger.warning(f"Could not read {target_file}: {e}")
+            return False
+
+        if not original.strip():
+            self.logger.warning(f"Target file is empty: {target_file}")
+            return False
+
+        # Truncate large files to stay within token limits
+        max_chars = 12000
+        if len(original) > max_chars:
+            original = original[:max_chars] + "\n... (truncated)"
+
+        prompt = f"""You are a software engineer fixing a GitHub issue. Below is the full content of a source file and a description of the change needed.
+
+FILE: {target_file}
+CHANGE NEEDED: {description}
+
+CURRENT FILE CONTENTS:
+```
+{original}
+```
+
+TASK: Produce the COMPLETE modified file content that implements the requested change. Output ONLY the full file contents — no markdown fences, no explanations, no extra text. The output must be valid source code that can be written directly to disk.
+
+If no change is needed, output the original content unchanged."""
+
+        self.logger.debug(f"LLM coding prompt length: {len(prompt)} chars for {target_file}")
+
+        from pydantic import BaseModel as _BaseModel
+
+        class _FileEdit(_BaseModel):
+            file_path: str
+            new_content: str
+
+        try:
+            response = self.llm_gateway.execute_structured(
+                prompt=prompt,
+                response_model=_FileEdit,
+                temperature=0.1,
+                max_tokens=8000,
+            )
+
+            new_content = response.new_content
+            if not new_content or new_content.strip() == original.strip():
+                self.logger.debug(f"LLM produced no meaningful change for {target_file}")
+                return False
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            self.logger.info(f"Applied LLM-generated edit to {target_file}")
+            return True
+
+        except Exception as e:
+            self.logger.warning(
+                f"LLM code synthesis failed for {target_file}: {e}. "
+                "Falling back to deterministic edits."
+            )
+            return False
+
     def execute(self, plan_steps: list, worktree_path: str) -> PatchResult:
         """Apply structured edits based on plan steps."""
         self.logger.info("Applying code changes to worktree...")
@@ -159,7 +238,13 @@ export async function stubHandler(c: Context) {
                 continue
 
             if action == "edit_file":
-                applied = self._apply_edit_to_file(worktree, target_file, description)
+                # Try LLM first if available
+                applied = False
+                if self.llm_gateway is not None:
+                    applied = self._synthesize_with_llm(worktree, target_file, description)
+                # Fall back to deterministic if LLM didn't apply anything
+                if not applied:
+                    applied = self._apply_edit_to_file(worktree, target_file, description)
                 if applied:
                     modified_files.append(target_file)
             else:

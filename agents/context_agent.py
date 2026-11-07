@@ -28,7 +28,7 @@ class ContextAgent(BaseAgent):
             self.logger.warning(f"Repo path does not exist: {repo_path}")
             return files
 
-        skip_dirs = {".git", ".resolv", "node_modules", ".venv", "__pycache__", "build", "dist", ".next"}
+        skip_dirs = {".git", ".resolv", "resolv", "worktrees", "node_modules", ".venv", "__pycache__", "build", "dist", ".next"}
 
         for file_path in root.rglob("*"):
             if not file_path.is_file():

@@ -5,7 +5,6 @@ from agents.tools.local_git import LocalGitSubAgent
 from typing import List, Tuple, Optional
 from pathlib import Path
 import re
-import json
 
 
 class PatchResult(BaseModel):
@@ -20,6 +19,8 @@ class CodingAgent(BaseAgent):
     Uses the LLM gateway to generate targeted code changes based on plan steps.
     Operates on logical code blocks (functions/classes) rather than full files
     to minimize token usage and maximize edit accuracy.
+    All LLM parameters (max_tokens, temperature, context_lines) are read from
+    the global config — no hardcoded values.
     """
 
     # Patterns for function/class definitions across C-style and Python-like languages
@@ -30,10 +31,15 @@ class CodingAgent(BaseAgent):
         r'^\s*(?:export\s+)?(?:public|private|protected)\s+(?:async\s+)?(?:function\s+)?(\w+)\s*\(',  # method-like
     ]
 
-    def __init__(self, logger: ResolvLogger, config, llm_gateway=None):
+    def __init__(self, logger: ResolvLogger, config, llm_gateway=None, global_config=None):
         super().__init__(logger, config)
         self.git_tool = LocalGitSubAgent(logger, config)
         self.llm_gateway = llm_gateway
+        # Read LLM settings from global config (written during setup, respected on reruns)
+        self.llm_max_tokens = getattr(global_config, 'llm_max_tokens', None) if global_config else None
+        self.llm_temperature = getattr(global_config, 'llm_temperature', None) if global_config else None
+        self.context_lines = getattr(global_config, 'llm_context_lines', 3) if global_config else 3
+        self.max_chars = getattr(global_config, 'llm_max_chars', 10000) if global_config else 10000
 
     # ------------------------------------------------------------------
     # Block parsing (language-agnostic)
@@ -106,7 +112,7 @@ class CodingAgent(BaseAgent):
         return best_block if best_score > 0 else None
 
     # ------------------------------------------------------------------
-    # LLM-based block editing (Option A)
+    # LLM-based block editing (Option A — v1)
     # ------------------------------------------------------------------
     def _synthesize_with_llm(
         self, worktree: Path, target_file: str, description: str
@@ -154,17 +160,17 @@ class CodingAgent(BaseAgent):
                 f"Using block lines {block_start + 1}-{block_end} for {target_file}"
             )
 
-        # Build context: the block plus surrounding lines (3 before, 3 after)
+        # Build context: the block plus surrounding lines (configurable)
         lines = original.split("\n")
-        context_start = max(0, block_start - 3)
-        context_end = min(len(lines), block_end + 3)
-        context_lines = lines[context_start:context_end]
-        context_text = "\n".join(context_lines)
+        context_lines = self.context_lines
+        context_start = max(0, block_start - context_lines)
+        context_end = min(len(lines), block_end + context_lines)
+        context_lines_text = lines[context_start:context_end]
+        context_text = "\n".join(context_lines_text)
 
-        # Truncate if too large
-        max_chars = 10000
-        if len(context_text) > max_chars:
-            context_text = context_text[:max_chars] + "\n... (truncated)"
+        # Truncate if too large (configurable)
+        if len(context_text) > self.max_chars:
+            context_text = context_text[:self.max_chars] + "\n... (truncated)"
 
         prompt = f"""You are a software engineer fixing a GitHub issue. Below is a code block from a source file and a description of the change needed.
 
@@ -195,8 +201,8 @@ TASK: Produce the COMPLETE modified block content that implements the requested 
             response = self.llm_gateway.execute_structured(
                 prompt=prompt,
                 response_model=_BlockEdit,
-                temperature=0.1,
-                max_tokens=6000,
+                temperature=self.llm_temperature,
+                max_tokens=self.llm_max_tokens,
             )
 
             new_block = response.new_block_content

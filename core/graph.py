@@ -325,7 +325,7 @@ def stage_2_plan(state: ResolvState) -> ResolvState:
         logger.info(f"LLM provider selected for planning: {selected_provider}")
 
     from agents.planner_agent import PlannerAgent
-    planner = PlannerAgent(logger, project_config, llm_gateway=llm_gateway)
+    planner = PlannerAgent(logger, project_config, llm_gateway=llm_gateway, global_config=global_config)
     plan_steps = planner.execute(context_data)
 
     # Convert Pydantic models to dict for serialization
@@ -416,7 +416,7 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
         logger.info(f"LLM provider selected for coding: {selected_provider}")
 
     from agents.coding_agent import CodingAgent
-    coding_agent = CodingAgent(logger, project_config, llm_gateway=llm_gateway)
+    coding_agent = CodingAgent(logger, project_config, llm_gateway=llm_gateway, global_config=global_config)
 
     # Resolve primary repo path
     primary_repo = "./"

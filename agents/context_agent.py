@@ -4,16 +4,64 @@ from agents.tools.codegraph import CodeGraphSubAgent
 from agents.tools.database_agent import DatabaseAgent
 from typing import Any, List, Dict
 from pathlib import Path
+import re
+import requests
 
 
 class ContextAgent(BaseAgent):
     """
     Conducts multi-modal codebase comprehension and context gathering.
     Hybrid agent: delegates deterministic tasks to sub-agents.
+    Detects project language from file extensions found in the repo.
+    Fetches issue body from GitHub API for context.
     """
 
-    # Source file extensions worth parsing for symbols
-    SOURCE_EXTENSIONS = {".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".java", ".rb", ".cs", ".php"}
+    # Source file extensions grouped by language
+    LANGUAGE_EXTENSIONS = {
+        "python": {".py"},
+        "typescript": {".ts", ".tsx"},
+        "javascript": {".js", ".jsx"},
+        "go": {".go"},
+        "java": {".java"},
+        "ruby": {".rb"},
+        "csharp": {".cs"},
+        "php": {".php"},
+        "rust": {".rs"},
+        "cpp": {".cpp", ".cc", ".cxx", ".hpp", ".h"},
+        "c": {".c", ".h"},
+        "swift": {".swift"},
+        "kotlin": {".kt", ".kts"},
+        "dart": {".dart"},
+        "scala": {".scala"},
+        "clojure": {".clj", ".cljs", ".cljc"},
+        "elixir": {".ex", ".exs"},
+        "erlang": {".erl", ".hrl"},
+        "haskell": {".hs"},
+        "ocaml": {".ml", ".mli"},
+        "fsharp": {".fs", ".fsx"},
+        "r": {".r"},
+        "julia": {".jl"},
+        "lua": {".lua"},
+        "perl": {".pl", ".pm"},
+        "php": {".php"},
+        "html": {".html", ".htm"},
+        "css": {".css", ".scss", ".sass", ".less"},
+        "sql": {".sql"},
+        "shell": {".sh", ".bash", ".zsh", ".fish"},
+        "yaml": {".yaml", ".yml"},
+        "json": {".json"},
+        "xml": {".xml"},
+        "toml": {".toml"},
+        "ini": {".ini", ".cfg", ".conf"},
+        "markdown": {".md", ".markdown"},
+        "dockerfile": {".dockerfile", "Dockerfile"},
+        "makefile": {"Makefile", "makefile", "GNUmakefile"},
+    }
+
+    # All source extensions combined (used for file discovery)
+    SOURCE_EXTENSIONS = set()
+    for _exts in LANGUAGE_EXTENSIONS.values():
+        SOURCE_EXTENSIONS.update(_exts)
 
     def __init__(self, logger: ResolvLogger, config):
         super().__init__(logger, config)
@@ -50,8 +98,74 @@ class ContextAgent(BaseAgent):
             self.logger.debug(f"  ... and {len(files) - 20} more")
         return files
 
-    def _extract_issue_keywords(self, issue_reference: str) -> List[str]:
-        """Extract searchable keywords from an issue reference (URL or text)."""
+    def _detect_language(self, source_files: List[str]) -> str:
+        """Detect the primary programming language from source file extensions."""
+        ext_counts: Dict[str, int] = {}
+        for f in source_files:
+            ext = Path(f).suffix.lower()
+            for lang, exts in self.LANGUAGE_EXTENSIONS.items():
+                if ext in exts:
+                    ext_counts[lang] = ext_counts.get(lang, 0) + 1
+                    break
+
+        if not ext_counts:
+            return "unknown"
+
+        # Return the language with the most files
+        return max(ext_counts, key=ext_counts.get)
+
+    def _fetch_issue_body(self, issue_reference: str) -> str:
+        """Fetch the issue body from GitHub API if the reference is a GitHub URL."""
+        if not (issue_reference.startswith("http://") or issue_reference.startswith("https://")):
+            return ""
+        if "/issues/" not in issue_reference:
+            return ""
+
+        try:
+            # Parse: https://github.com/owner/repo/issues/123
+            parts = issue_reference.rstrip("/").split("/")
+            # Find "github.com" index
+            github_idx = -1
+            for i, p in enumerate(parts):
+                if "github.com" in p:
+                    github_idx = i
+                    break
+            if github_idx == -1 or github_idx + 3 >= len(parts):
+                return ""
+
+            owner = parts[github_idx + 1]
+            repo = parts[github_idx + 2]
+            # Find "issues" index
+            issues_idx = -1
+            for i, p in enumerate(parts):
+                if p == "issues":
+                    issues_idx = i
+                    break
+            if issues_idx == -1 or issues_idx + 1 >= len(parts):
+                return ""
+
+            issue_number = parts[issues_idx + 1]
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+
+            self.logger.info(f"Fetching issue body from: {api_url}")
+            resp = requests.get(api_url, timeout=15, headers={"Accept": "application/vnd.github.v3+json"})
+            if resp.status_code == 200:
+                data = resp.json()
+                body = data.get("body", "") or ""
+                self.logger.info(f"Fetched issue body ({len(body)} chars)")
+                return body
+            elif resp.status_code == 404:
+                self.logger.warning(f"Issue not found on GitHub: {issue_reference}")
+                return ""
+            else:
+                self.logger.warning(f"GitHub API returned {resp.status_code} for {api_url}")
+                return ""
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch issue body: {e}")
+            return ""
+
+    def _extract_issue_keywords(self, issue_reference: str, issue_body: str = "") -> List[str]:
+        """Extract searchable keywords from an issue reference and body."""
         keywords: List[str] = []
         # Take the last path segment (e.g. issues/3 -> '3', or a slug)
         stripped = issue_reference.strip().rstrip("/")
@@ -65,14 +179,26 @@ class ContextAgent(BaseAgent):
             for part in kw.replace("-", " ").replace("_", " ").split():
                 if part and part not in keywords:
                     keywords.append(part)
+        # Also extract keywords from issue body (first 500 chars)
+        if issue_body:
+            # Extract meaningful words from the body
+            body_words = re.findall(r'\b[a-zA-Z]{4,}\b', issue_body[:500].lower())
+            for w in body_words:
+                if w not in keywords and w not in ("issue", "bug", "fix", "error", "feature", "add", "remove", "update", "change"):
+                    keywords.append(w)
         self.logger.debug(f"Extracted issue keywords: {keywords}")
         return keywords
 
     def execute(self, issue_reference: str, repo_paths: list) -> dict:
         """Ingest issue and gather code context."""
         self.logger.info(f"Analyzing issue: {issue_reference}")
+
+        # Fetch issue body from GitHub API
+        issue_body = self._fetch_issue_body(issue_reference)
+
         context: Dict[str, Any] = {
             "issue": issue_reference,
+            "issue_body": issue_body,
             "issue_summary": f"Auto-resolving issue: {issue_reference}",
             "affected_files": [],
             "required_changes": [],
@@ -86,9 +212,10 @@ class ContextAgent(BaseAgent):
             "source_files": [],
             "grep_matches": {},
             "repo_root": str(Path(repo_paths[0]).resolve()) if repo_paths else "",
+            "language": "unknown",
         }
 
-        keywords = self._extract_issue_keywords(issue_reference)
+        keywords = self._extract_issue_keywords(issue_reference, issue_body)
 
         for path in repo_paths:
             self.logger.info(f"Scanning repo path: {path}")
@@ -97,10 +224,22 @@ class ContextAgent(BaseAgent):
             source_files = self._discover_source_files(path)
             context["source_files"].extend(source_files)
 
-            # Parse AST for each source file individually
+            # Detect language from file extensions
+            if context["language"] == "unknown":
+                context["language"] = self._detect_language(source_files)
+
+            # Parse AST only for Python files (ast module only works for Python)
             for src_file in source_files:
                 self.logger.debug(f"Parsing AST: {src_file}")
-                symbol_entry = self.codegraph.parse_ast(src_file)
+                if Path(src_file).suffix.lower() == ".py":
+                    symbol_entry = self.codegraph.parse_ast(src_file)
+                else:
+                    symbol_entry = {
+                        "file": src_file,
+                        "functions": [],
+                        "classes": [],
+                        "skipped": f"not Python (suffix: {Path(src_file).suffix})",
+                    }
                 context["symbols"].append(symbol_entry)
 
             # Grep for issue-related keywords in source files
@@ -119,7 +258,8 @@ class ContextAgent(BaseAgent):
         total_symbols = sum(len(s.get("functions", [])) + len(s.get("classes", [])) for s in context["symbols"])
         self.logger.info(
             f"Context gathering complete — {len(context['source_files'])} source files, "
-            f"{total_symbols} symbols/functions/classes across {len(context['symbols'])} parsed files"
+            f"{total_symbols} symbols/functions/classes across {len(context['symbols'])} parsed files, "
+            f"language: {context['language']}"
         )
 
         # Populate fields expected by analysis.md

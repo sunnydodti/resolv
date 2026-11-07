@@ -57,6 +57,11 @@ class LiteLLMGateway(BaseAgent):
         self.selected_model: Optional[str] = None
         self.credential_store = credential_store
 
+        # LLM settings from config (written during setup, respected on reruns)
+        self.llm_max_tokens = config.llm_max_tokens
+        self.llm_temperature = config.llm_temperature
+        self.llm_max_retries = config.llm_max_retries
+
         # Validate that config has providers
         if not self.providers:
             self.logger.error("No LLM providers configured in ~/.resolv/config.yaml")
@@ -127,13 +132,46 @@ class LiteLLMGateway(BaseAgent):
         """Return list of configured provider names."""
         return list(self.providers.keys())
 
+    def _resolve_temperature(self, temperature: Optional[float]) -> float:
+        """Resolve temperature: explicit arg > config default > 0.1."""
+        if temperature is not None:
+            return temperature
+        if self.llm_temperature is not None:
+            return self.llm_temperature
+        return 0.1
+
+    def _resolve_max_tokens(self, max_tokens: Optional[int]) -> Optional[int]:
+        """Resolve max_tokens: explicit arg > config default > None."""
+        if max_tokens is not None:
+            return max_tokens
+        return self.llm_max_tokens
+
+    def _retry_on_incomplete(self, func, *args, max_retries: int = 3, **kwargs):
+        """Retry LLM calls that fail with IncompleteOutputException (max_tokens truncation)."""
+        import time
+        last_exception = None
+        for attempt in range(max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_exception = e
+                is_incomplete = "IncompleteOutputException" in type(e).__name__ or "incomplete" in str(e).lower()
+                if is_incomplete and attempt < max_retries:
+                    self.logger.warning(
+                        f"LLM output incomplete (attempt {attempt + 1}/{max_retries + 1}), retrying..."
+                    )
+                    time.sleep(1)
+                    continue
+                raise
+        raise last_exception
+
     def execute_structured(
         self,
         prompt: str,
         response_model: Type[T],
         provider: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.1,
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> T:
         """
@@ -156,6 +194,10 @@ class LiteLLMGateway(BaseAgent):
         # Prefix model with provider for litellm routing (e.g. "openrouter/model")
         litellm_model = f"{provider_name}/{model_name}"
 
+        # Resolve temperature and max_tokens from config defaults
+        temperature = self._resolve_temperature(temperature)
+        max_tokens = self._resolve_max_tokens(max_tokens)
+
         # Resolve API key — FAIL EARLY if missing
         try:
             api_key = resolve_config_value(provider_cfg.api_key, self.credential_store)
@@ -175,7 +217,8 @@ class LiteLLMGateway(BaseAgent):
 
         self.logger.debug(
             f"LLM call: provider={provider_name}, model={model_name}, "
-            f"prompt_len={len(prompt)}, response_model={response_model.__name__}"
+            f"prompt_len={len(prompt)}, response_model={response_model.__name__}, "
+            f"temperature={temperature}, max_tokens={max_tokens}"
         )
 
         # Log LLM request
@@ -193,14 +236,20 @@ class LiteLLMGateway(BaseAgent):
             },
         )
 
-        try:
+        def _make_call():
             client = from_litellm(litellm.completion)
-            response: T = client.chat.completions.create(
+            return client.chat.completions.create(
                 model=litellm_model,
                 messages=[{"role": "user", "content": prompt}],
                 response_model=response_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+            )
+
+        try:
+            # Retry on incomplete output (max_tokens truncation)
+            response: T = self._retry_on_incomplete(
+                _make_call, max_retries=self.llm_max_retries
             )
             self.logger.success(f"LLM call succeeded: {provider_name}/{model_name}")
 
@@ -237,7 +286,7 @@ class LiteLLMGateway(BaseAgent):
         prompt: str,
         provider: Optional[str] = None,
         model: Optional[str] = None,
-        temperature: float = 0.1,
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
         """
@@ -255,6 +304,10 @@ class LiteLLMGateway(BaseAgent):
         model_name = model or provider_cfg.model
         # Prefix model with provider for litellm routing (e.g. "openrouter/model")
         litellm_model = f"{provider_name}/{model_name}"
+
+        # Resolve temperature and max_tokens from config defaults
+        temperature = self._resolve_temperature(temperature)
+        max_tokens = self._resolve_max_tokens(max_tokens)
 
         # Resolve API key — FAIL EARLY if missing
         try:
@@ -289,12 +342,17 @@ class LiteLLMGateway(BaseAgent):
             },
         )
 
-        try:
-            response = litellm.completion(
+        def _make_text_call():
+            return litellm.completion(
                 model=litellm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
+            )
+
+        try:
+            response = self._retry_on_incomplete(
+                _make_text_call, max_retries=self.llm_max_retries
             )
             content = response.choices[0].message.content
             if not content:
@@ -341,13 +399,13 @@ class LiteLLMGateway(BaseAgent):
                 response_model=response_model,
                 provider=kwargs.get("provider"),
                 model=kwargs.get("model"),
-                temperature=kwargs.get("temperature", 0.1),
+                temperature=kwargs.get("temperature"),
                 max_tokens=kwargs.get("max_tokens"),
             )
         return self.execute_text(
             prompt=prompt,
             provider=kwargs.get("provider"),
             model=kwargs.get("model"),
-            temperature=kwargs.get("temperature", 0.1),
+            temperature=kwargs.get("temperature"),
             max_tokens=kwargs.get("max_tokens"),
         )

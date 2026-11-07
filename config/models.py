@@ -245,6 +245,10 @@ class GlobalConfig(BaseModel):
     telemetry: TelemetryConfig
     providers: Dict[str, ProviderConfig]
     clone_root: Optional[str] = None  # base directory for cloned repositories
+    # LLM settings (read from config, written during setup, respected on reruns)
+    llm_max_tokens: Optional[int] = None  # default max_tokens for LLM calls
+    llm_temperature: Optional[float] = None  # default temperature for LLM calls
+    llm_max_retries: int = 3  # max retries for incomplete LLM output
 
 
 # =============================================================================

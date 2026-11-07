@@ -20,12 +20,17 @@ class PlannerAgent(BaseAgent):
     Formulates step-by-step resolution roadmaps while enforcing resource limits.
     Uses the LLM gateway to analyze the issue and context, then generates
     specific, actionable plan steps for each affected source file.
+    All LLM parameters (max_tokens, temperature) are read from the global
+    config — no hardcoded values.
     """
 
-    def __init__(self, logger: ResolvLogger, config, llm_gateway=None):
+    def __init__(self, logger: ResolvLogger, config, llm_gateway=None, global_config=None):
         super().__init__(logger, config)
         self.token_budget = 10000
         self.llm_gateway = llm_gateway
+        # Read LLM settings from global config (written during setup, respected on reruns)
+        self.llm_max_tokens = getattr(global_config, 'llm_max_tokens', None) if global_config else None
+        self.llm_temperature = getattr(global_config, 'llm_temperature', None) if global_config else None
 
     def _to_rel(self, abs_path: str, repo_root: str = "") -> str:
         """Convert an absolute path to a path relative to repo_root."""
@@ -41,10 +46,12 @@ class PlannerAgent(BaseAgent):
         self.logger.info("Generating resolution roadmap...")
 
         issue = context.get("issue", "unknown")
+        issue_body = context.get("issue_body", "")  # Full issue body from GitHub API
         symbols: list = context.get("symbols", [])
         source_files: list = context.get("source_files", [])
         grep_matches: dict = context.get("grep_matches", {})
         repo_root: str = context.get("repo_root", "")
+        language: str = context.get("language", "unknown")
 
         # Determine which files are relevant based on grep matches
         relevant_files: set = set()
@@ -65,16 +72,18 @@ class PlannerAgent(BaseAgent):
             raise ValueError("PlannerAgent requires an LLM gateway — no fallback allowed")
 
         return self._plan_with_llm(
-            issue, relevant_files, source_files, grep_matches, repo_root
+            issue, issue_body, relevant_files, source_files, grep_matches, repo_root, language
         )
 
     def _plan_with_llm(
         self,
         issue: str,
+        issue_body: str,
         relevant_files: set,
         source_files: list,
         grep_matches: dict,
         repo_root: str,
+        language: str,
     ) -> List[PlanStep]:
         """Use the LLM to generate specific plan steps based on issue and context."""
         # Build a concise summary of grep matches for the LLM
@@ -88,15 +97,27 @@ class PlannerAgent(BaseAgent):
 
         files_text = "\n".join(f"  {f}" for f in sorted(relevant_files))
 
+        # Include the actual issue body so the LLM understands what needs to change
+        issue_body_section = ""
+        if issue_body:
+            issue_body_section = f"""
+ISSUE BODY (from GitHub):
+{issue_body[:3000]}
+"""
+
         prompt = f"""You are a software engineering planner. Analyze the GitHub issue and the code context below, then produce a resolution plan.
 
-ISSUE: {issue}
+ISSUE REFERENCE: {issue}
+ISSUE BODY:
+{issue_body_section}
 
 RELEVANT SOURCE FILES (identified by grep matching issue keywords):
 {files_text}
 
 GREP MATCHES (code lines containing issue-related terms):
 {matches_text}
+
+REPO LANGUAGE: {language}
 
 TASK: For each relevant file, describe SPECIFIC code changes needed to resolve the issue. Be concrete — mention functions, line ranges, or logic to modify. Do NOT say "Apply issue-related changes" — describe what actually needs to change.
 
@@ -126,8 +147,8 @@ Only include files that genuinely need changes. Output ONLY the JSON array, no m
         response = self.llm_gateway.execute_structured(
             prompt=prompt,
             response_model=_Plan,
-            temperature=0.1,
-            max_tokens=4000,
+            temperature=self.llm_temperature,
+            max_tokens=self.llm_max_tokens,
         )
 
         plan: List[PlanStep] = []

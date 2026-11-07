@@ -16,7 +16,7 @@ class ContextAgent(BaseAgent):
     Fetches issue body from GitHub API for context.
     """
 
-    # Source file extensions grouped by language
+    # Source file extensions grouped by language (for language detection)
     LANGUAGE_EXTENSIONS = {
         "python": {".py"},
         "typescript": {".ts", ".tsx"},
@@ -43,22 +43,9 @@ class ContextAgent(BaseAgent):
         "julia": {".jl"},
         "lua": {".lua"},
         "perl": {".pl", ".pm"},
-        "php": {".php"},
-        "html": {".html", ".htm"},
-        "css": {".css", ".scss", ".sass", ".less"},
-        "sql": {".sql"},
-        "shell": {".sh", ".bash", ".zsh", ".fish"},
-        "yaml": {".yaml", ".yml"},
-        "json": {".json"},
-        "xml": {".xml"},
-        "toml": {".toml"},
-        "ini": {".ini", ".cfg", ".conf"},
-        "markdown": {".md", ".markdown"},
-        "dockerfile": {".dockerfile", "Dockerfile"},
-        "makefile": {"Makefile", "makefile", "GNUmakefile"},
     }
 
-    # All source extensions combined (used for file discovery)
+    # All source code extensions combined (used for code discovery and grep)
     SOURCE_EXTENSIONS = set()
     for _exts in LANGUAGE_EXTENSIONS.values():
         SOURCE_EXTENSIONS.update(_exts)

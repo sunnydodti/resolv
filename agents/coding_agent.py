@@ -263,12 +263,10 @@ TASK: Produce the COMPLETE modified block content that implements the requested 
             if action == "edit_file":
                 applied = self._synthesize_with_llm(worktree, target_file, description)
                 if not applied:
-                    self.logger.error(
-                        f"LLM did not produce a change for {target_file} — no fallback allowed"
+                    self.logger.warning(
+                        f"LLM did not produce a change for {target_file} — skipping"
                     )
-                    raise RuntimeError(
-                        f"CodingAgent failed: LLM produced no change for {target_file}"
-                    )
+                    continue
                 modified_files.append(target_file)
             else:
                 self.logger.warning(f"Unknown action '{action}' for {target_file}, skipping")

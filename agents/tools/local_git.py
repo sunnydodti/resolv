@@ -181,16 +181,24 @@ class LocalGitSubAgent(SubAgent):
                 )
             except subprocess.CalledProcessError:
                 pass  # May not be locked
+            # Only pull if the branch has upstream tracking configured
             try:
+                self._run_git(
+                    ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+                    repo_path=worktree_path,
+                    operation="rev-parse --abbrev-ref --symbolic-full-name @{u}",
+                )
+                # Upstream exists — safe to pull
                 self._run_git(
                     ["git", "pull", "--ff-only"],
                     repo_path=worktree_path,
                     operation="pull --ff-only",
                 )
                 self.logger.info(f"Worktree synced: {worktree_path}")
-            except subprocess.CalledProcessError as e:
-                self.logger.warning(
-                    f"Worktree sync failed (may have local changes): {e.stderr.strip()}"
+            except subprocess.CalledProcessError:
+                # No upstream tracking or pull failed — skip sync silently
+                self.logger.debug(
+                    f"Worktree {worktree_path} has no upstream tracking; skipping pull"
                 )
         else:
             # Create feature branch in the main repo if it doesn't exist

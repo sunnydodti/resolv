@@ -12,6 +12,9 @@ class SandboxRunnerSubAgent(SubAgent):
 
     def run_command(self, cmd: str, cwd: str = ".", timeout: int = 60) -> dict:
         """Execute a shell command in sandboxed environment."""
+        if not cmd:
+            self.logger.warning("No command to run, skipping")
+            return {"returncode": 0, "stdout": "", "stderr": "No command"}
         self.logger.info(f"Sandbox run: {cmd}")
         try:
             result = subprocess.run(

@@ -2,6 +2,7 @@ import logging
 import sys
 from typing import Optional
 
+
 # ANSI Color Codes for TrueColor — Vibrant Material Design colors
 COLORS = {
     "I": "\033[38;2;33;150;243m",  # Blue 500 — Info
@@ -14,18 +15,20 @@ COLORS = {
     "RESET": "\033[0m"
 }
 
+
 class ResolvLogger:
     def __init__(self, verbose: bool = False, log_file: Optional[str] = None):
         self.verbose = verbose
         self.log_file = log_file
 
-    def _log(self, level: str, message: str):
+    def _log(self, level: str, message: str, to_stdout: bool = True):
         # ANSI-encoded for stdout
-        color = COLORS.get(level, COLORS["RESET"])
-        formatted_message = f"{color}[{level}]{COLORS['RESET']} {message}"
-        print(formatted_message)
+        if to_stdout:
+            color = COLORS.get(level, COLORS["RESET"])
+            formatted_message = f"{color}[{level}]{COLORS['RESET']} {message}"
+            print(formatted_message)
 
-        # Plain text for file
+        # Plain text for file — ALL levels go to the file for silent review
         if self.log_file:
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{level}] {message}\n")
@@ -36,8 +39,8 @@ class ResolvLogger:
     def error(self, msg): self._log("E", msg)
     def hint(self, msg): self._log("H", msg)
     def debug(self, msg):
-        if self.verbose:
-            self._log("D", msg)
+        # Debug always goes to the log file; stdout only when verbose
+        self._log("D", msg, to_stdout=self.verbose)
     def prompt(self, msg: str):
         """Prompt user for input without trailing newline so input appears on same line."""
         color = COLORS.get("?", COLORS["RESET"])

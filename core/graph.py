@@ -17,8 +17,73 @@ from core.logger import ResolvLogger
 from config.models import (
     GlobalConfig, ProjectConfig, CredentialsStore,
     CodeContext, ResolutionPlan, ReviewResult,
-    load_global_config, load_project_config
+    load_global_config, load_project_config, get_resolv_dir
 )
+
+
+def _get_logger(state: ResolvState) -> ResolvLogger:
+    """Get logger from state, creating a fallback if not present.
+
+    _logger is not serializable through LangGraph's MemorySaver checkpointer,
+    so it may be lost between stage nodes. This helper ensures every stage
+    has a working logger. Debug messages always go to the session log file;
+    they appear on stdout only when verbose=True.
+    """
+    logger = state.get("_logger")
+    if logger is None:
+        verbose = state.get("verbose", False)
+        log_file = state.get("log_file")
+        logger = ResolvLogger(verbose=verbose, log_file=log_file)
+    return logger
+
+
+def _planned_file_targets(plan_data: Any) -> list:
+    """Extract real file paths from plan steps, filtering out URLs and non-file targets."""
+    if not plan_data:
+        return []
+    planned = []
+    for step in plan_data:
+        if isinstance(step, dict):
+            target = step.get("target_file", "")
+            action = step.get("action", "")
+        else:
+            target = getattr(step, "target_file", "")
+            action = getattr(step, "action", "")
+        # Skip URLs and empty targets
+        if not target or target.startswith(("http://", "https://")):
+            continue
+        planned.append(target)
+    return planned
+
+
+def _changes_were_planned(state: ResolvState) -> bool:
+    """Return True if the plan contains real file-change targets."""
+    plan_data = state.get("plan_data", [])
+    return len(_planned_file_targets(plan_data)) > 0
+
+
+def _planned_changes_applied(state: ResolvState) -> tuple[bool, list, list]:
+    """
+    Compare planned file targets against what was actually applied.
+
+    Returns (applied, planned_files, applied_files):
+      - applied: True if every planned file was applied (or nothing was planned)
+      - planned_files: list of real file targets from the plan
+      - applied_files: list of files actually modified
+    """
+    planned = _planned_file_targets(state.get("plan_data", []))
+    applied = state.get("modified_files", []) or []
+
+    if not planned:
+        # Nothing was planned — treat as no-op, valid
+        return True, [], applied
+
+    planned_set = set(planned)
+    applied_set = set(applied)
+
+    # All planned files must be in applied files
+    all_applied = planned_set.issubset(applied_set)
+    return all_applied, planned, applied
 
 
 # =============================================================================
@@ -34,9 +99,10 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     - Prepare base and feature branches
     - Initialize metadata.json
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     project_name: str = state.get("project_name")
     issue_reference: str = state.get("issue_reference")
+    issue_id: str = state.get("issue_id", "") or issue_reference.split("/")[-1] if issue_reference else ""
 
     # FAIL EARLY: Required state fields must be present
     if not project_name:
@@ -49,11 +115,20 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     logger.info(f"Stage 0: Setup — Establishing isolated session workspace")
 
     # Create session workspace
-    issue_id: str = state.get("issue_id", "")
-    if not issue_id:
-        logger.error("Missing required state field: issue_id")
-        raise ValueError("Missing issue_id in state")
+    session_path = Path(f".resolv/sessions/{project_name}/{issue_id}")
+    session_path.mkdir(parents=True, exist_ok=True)
 
+    logger.debug(f"project_name={project_name}")
+    logger.debug(f"issue_reference={issue_reference}")
+    logger.debug(f"issue_id={issue_id}")
+    logger.debug(f"session_path={session_path}")
+    logger.debug(f"max_healing_turns={state.get('max_healing_turns', 3)}")
+    logger.debug(f"dry_run={state.get('dry_run', False)}")
+    logger.debug(f"analysis_only={state.get('analysis_only', False)}")
+    logger.debug(f"verbose={state.get('verbose', False)}")
+    logger.debug(f"log_file={state.get('log_file')}")
+
+    # Create session workspace
     session_path = Path(f".resolv/sessions/{project_name}/{issue_id}")
     session_path.mkdir(parents=True, exist_ok=True)
 
@@ -95,6 +170,43 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     # Save credentials.json
     save_credentials(str(session_path), cred_store)
 
+    # Clone the primary repository into clone_root/<project>
+    global_config = state.get("global_config", {})
+    if isinstance(global_config, dict):
+        clone_root = global_config.get("clone_root", str(get_resolv_dir() / "workspaces"))
+    else:
+        clone_root = getattr(global_config, 'clone_root', str(get_resolv_dir() / "workspaces"))
+
+    project_config = state.get("project_config", {})
+    if isinstance(project_config, dict):
+        repos = project_config.get("repos", {})
+        primary = repos.get("primary", {})
+    else:
+        repos = getattr(project_config, 'repos', {})
+        primary = repos.get("primary", {}) if hasattr(repos, 'get') else {}
+
+    repo_base = primary.get("base", "") if isinstance(primary, dict) else ""
+    repo_path_part = primary.get("path", "") if isinstance(primary, dict) else ""
+
+    if repo_base and repo_path_part:
+        repo_url = f"https://{repo_base}/{repo_path_part}"
+        target_repo_path = str(Path(clone_root) / project_name)
+
+        from agents.tools.remote_git import RemoteGitSubAgent
+        remote_agent = RemoteGitSubAgent(logger, None)
+        try:
+            remote_agent.clone_repo(repo_url, target_repo_path)
+        except RuntimeError as e:
+            logger.error(str(e))
+            raise
+
+        logger.info(f"Repository ready at {target_repo_path}")
+    else:
+        logger.warning(
+            "No repo base/path in project config — skipping clone. "
+            "Run 'resolv setup --project <name>' to configure."
+        )
+
     logger.success(f"Stage 0 Complete — Workspace ready at {session_path}")
 
     return {
@@ -111,6 +223,8 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
         "pr_url": None,
         "pr_draft": False,
         "branch_name": None,
+        # Expose resolved credential store to later stages
+        "credentials_store": cred_store.model_dump(),
     }
 
 
@@ -119,11 +233,13 @@ def stage_1_analyze(state: ResolvState) -> ResolvState:
     Stage 1: Analyze — Context gathering and semantic exploration.
     Produces context.json and analysis.md.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 1: Analyze — Ingesting issue and exploring codebase...")
 
     project_config = state.get("project_config", {})
     issue_reference = state.get("issue_reference", "")
+
+    logger.debug(f"issue_reference={issue_reference}")
 
     # Extract repo paths from project config
     repo_paths = []
@@ -131,6 +247,8 @@ def stage_1_analyze(state: ResolvState) -> ResolvState:
     for repo_key, repo_cfg in repos.items():
         if isinstance(repo_cfg, dict) and "repopath" in repo_cfg:
             repo_paths.append(repo_cfg["repopath"])
+
+    logger.debug(f"repo_paths={repo_paths}")
 
     # Delegate to ContextAgent
     from agents.context_agent import ContextAgent
@@ -164,11 +282,15 @@ def stage_2_plan(state: ResolvState) -> ResolvState:
     Stage 2: Plan — Synthesize architectural roadmap.
     Produces plan.json and plan.md.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 2: Plan — Synthesizing architectural roadmap...")
 
     context_data = state.get("context_data", {})
     project_config = state.get("project_config", {})
+
+    logger.debug(f"context_data keys={list(context_data.keys()) if isinstance(context_data, dict) else type(context_data)}")
+    logger.debug(f"symbols count={len(context_data.get('symbols', [])) if isinstance(context_data, dict) else 'N/A'}")
+    logger.debug(f"source_files count={len(context_data.get('source_files', [])) if isinstance(context_data, dict) else 'N/A'}")
 
     from agents.planner_agent import PlannerAgent
     planner = PlannerAgent(logger, project_config)
@@ -203,11 +325,26 @@ def stage_3_apply(state: ResolvState) -> ResolvState:
     """
     Stage 3: Apply — Create isolated git worktrees and apply code edits.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 3: Apply — Synthesizing structured code edits in worktree...")
 
+    try:
+        return _stage_3_apply_impl(state)
+    except PermissionError as e:
+        logger.error(f"Permission denied in Stage 3: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        raise
+
+
+def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
+    logger = _get_logger(state)
     plan_steps = state.get("plan_data", [])
     project_config = state.get("project_config", {})
+
+    logger.debug(f"plan_steps count={len(plan_steps) if isinstance(plan_steps, list) else 'N/A'}")
+    for i, step in enumerate(plan_steps[:10] if isinstance(plan_steps, list) else []):
+        logger.debug(f"  plan step {i}: {step}")
 
     from agents.coding_agent import CodingAgent
     coding_agent = CodingAgent(logger, project_config)
@@ -218,7 +355,7 @@ def stage_3_apply(state: ResolvState) -> ResolvState:
     if "primary" in repos:
         primary_repo = repos["primary"].get("repopath", "./") if isinstance(repos["primary"], dict) else "./"
 
-    feature_branch = f"resolv/{state.get('issue_id', 'unknown')}"
+    feature_branch = f"resolv/{state.get('issue_id') or state.get('issue_reference', 'unknown').split('/')[-1] if state.get('issue_reference') else 'unknown'}"
 
     # Create worktree
     worktree_path = coding_agent.git_tool.init_session_workspace(primary_repo, feature_branch)
@@ -228,6 +365,9 @@ def stage_3_apply(state: ResolvState) -> ResolvState:
     patch_result: PatchResult = coding_agent.execute(plan_steps, worktree_path)
 
     logger.success(f"Stage 3 Complete — {len(patch_result.modified_files)} file(s) modified")
+    logger.debug(f"worktree_path={worktree_path}")
+    logger.debug(f"modified_files={patch_result.modified_files}")
+    logger.debug(f"diff_output length={len(patch_result.diff) if patch_result.diff else 0}")
 
     return {
         **state,
@@ -244,59 +384,63 @@ def stage_4_build_test(state: ResolvState) -> ResolvState:
     Stage 4: Build / Test — Execute tests with self-healing loop.
     On failure, route back to Stage 3 (if turns < max) or to Stage 6.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 4: Build / Test — Running sandboxed test suite...")
 
     project_config = state.get("project_config", {})
     max_turns = state.get("max_healing_turns", 3)
     current_turns = state.get("healing_turns", 0)
 
+    logger.debug(f"max_healing_turns={max_turns}")
+    logger.debug(f"healing_turns={current_turns}")
+
     from agents.tools.sandbox_runner import SandboxRunnerSubAgent
     runner = SandboxRunnerSubAgent(logger, project_config)
 
-    test_cmd = "pytest tests/unit"
+    test_cmd = None
     repos = project_config.get("repos", {}) if isinstance(project_config, dict) else {}
     if "primary" in repos and isinstance(repos["primary"], dict):
-        test_cmd = repos["primary"].get("testcmd", test_cmd)
+        test_cmd = repos["primary"].get("testcmd")
 
-    build_cmd = "echo build"
+    build_cmd = None
     if "primary" in repos and isinstance(repos["primary"], dict):
-        build_cmd = repos["primary"].get("buildcmd", build_cmd)
+        build_cmd = repos["primary"].get("buildcmd")
 
-    # Run build
-    build_result = runner.run_command(build_cmd)
-    if build_result["returncode"] != 0:
-        logger.error(f"Build failed: {build_result['stderr']}")
-        # Route back to Stage 3 if turns remain
-        if current_turns < max_turns:
-            return {
-                **state,
-                "current_stage": "STAGE_3_APPLY",
-                "healing_turns": current_turns + 1,
-                "error_trace": build_result["stderr"],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        else:
-            return {
-                **state,
-                "current_stage": "STAGE_6_PUBLISH",
-                "error_trace": build_result["stderr"],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
+    logger.debug(f"build_cmd={build_cmd}")
+    logger.debug(f"test_cmd={test_cmd}")
 
-    # Run tests
-    test_result = runner.run_command(test_cmd)
-    if test_result["returncode"] == 0:
-        logger.success("Stage 4 Complete — All tests passed")
-        return {
-            **state,
-            "current_stage": "STAGE_4_BUILD_TEST",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "test_results": test_result,
-            "error_trace": None,
-        }
+    # Run build (skip if not configured)
+    if not build_cmd:
+        logger.warning("No build command configured for this project — skipping build")
     else:
-        logger.warning(f"Test failure detected (turn {current_turns + 1}/{max_turns})")
+        build_result = runner.run_command(build_cmd)
+        if build_result["returncode"] != 0:
+            logger.error(f"Build failed: {build_result['stderr']}")
+            # Route back to Stage 3 if turns remain
+            if current_turns < max_turns:
+                return {
+                    **state,
+                    "current_stage": "STAGE_3_APPLY",
+                    "healing_turns": current_turns + 1,
+                    "error_trace": build_result["stderr"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            else:
+                return {
+                    **state,
+                    "current_stage": "STAGE_6_PUBLISH",
+                    "error_trace": build_result["stderr"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+    # Run tests (skip if not configured)
+    if not test_cmd:
+        logger.warning("No test command configured for this project — skipping tests")
+        test_result = {"returncode": 0, "stdout": "", "stderr": "skipped: no test command configured"}
+    else:
+        test_result = runner.run_command(test_cmd)
+        if test_result["returncode"] != 0:
+            logger.warning(f"Test failure detected (turn {current_turns + 1}/{max_turns})")
         if current_turns < max_turns:
             return {
                 **state,
@@ -323,11 +467,47 @@ def stage_5_review(state: ResolvState) -> ResolvState:
     Stage 5: Review — Audit diff for security and compliance.
     On failure, route back to Stage 1/2.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 5: Review — Auditing diff for security and compliance...")
 
     diff_output = state.get("diff_output", "")
     project_config = state.get("project_config", {})
+
+    logger.debug(f"diff_output length={len(diff_output or '')}")
+    logger.debug(f"project_config keys={list(project_config.keys()) if isinstance(project_config, dict) else type(project_config)}")
+
+    # Determine what was planned vs what was actually applied
+    applied, planned_files, applied_files = _planned_changes_applied(state)
+
+    # If nothing was planned, this is a no-op — skip review gracefully
+    if not planned_files:
+        logger.warning("No code changes were planned — Stage 5 is a no-op, skipping review")
+        return {
+            **state,
+            "current_stage": "STAGE_5_REVIEW",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "security_result": {"status": "SKIPPED", "reason": "no changes planned"},
+            "review_result": {"status": "SKIPPED", "reason": "no changes planned"},
+        }
+
+    # If changes were planned but not applied — fail fast
+    if not applied:
+        logger.error(
+            f"Changes were planned for {planned_files} but none were applied. "
+            "Stage 3 did not implement the planned changes."
+        )
+        raise RuntimeError(
+            f"Stage 5 failed: planned changes for {planned_files} were not applied by Stage 3. "
+            "The coding agent must implement the planned file changes before review."
+        )
+
+    # Fail fast: no actual code changes to review
+    if not diff_output or not diff_output.strip():
+        logger.error("No code changes to review — diff is empty")
+        raise RuntimeError(
+            "Stage 5 failed: diff is empty. No code changes were produced in Stage 3, "
+            "so there is nothing to review for security or compliance."
+        )
 
     from agents.security_agent import SecurityAgent
     from agents.review_agent import ReviewAgent
@@ -374,7 +554,7 @@ def stage_6_publish(state: ResolvState) -> ResolvState:
     """
     Stage 6: Publish — Commit, push, and open Pull Request (ready-for-review).
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 6: Publish — Committing changes and opening Pull Request...")
 
     project_config = state.get("project_config", {})
@@ -382,19 +562,93 @@ def stage_6_publish(state: ResolvState) -> ResolvState:
     worktree_path = state.get("worktree_path", "./")
     branch_name = state.get("branch_name") or f"resolv/{state.get('issue_id', 'unknown')}"
 
+    logger.debug(f"project_config keys={list(project_config.keys()) if isinstance(project_config, dict) else type(project_config)}")
+    logger.debug(f"patch_modified_files={patch_modified_files}")
+    logger.debug(f"worktree_path={worktree_path}")
+    logger.debug(f"branch_name={branch_name}")
+    logger.debug(f"worktree_exists={Path(worktree_path).exists()}")
+    logger.debug(f"diff_output length={len(state.get('diff_output', '') or '')}")
+    logger.debug(f"credentials_store present={bool(state.get('credentials_store'))}")
+
     from agents.tools.remote_git import RemoteGitSubAgent
     remote_agent = RemoteGitSubAgent(logger, project_config)
+
+    # Validate worktree exists before committing/pushing
+    if not Path(worktree_path).exists():
+        logger.error(f"Worktree directory not found: {worktree_path}")
+        raise FileNotFoundError(
+            f"Worktree directory not found: {worktree_path}. "
+            "Stage 3 may have failed to create the worktree, or it was cleaned up prematurely."
+        )
+
+    # Determine what was planned vs what was actually applied
+    applied, planned_files, applied_files = _planned_changes_applied(state)
+
+    # If nothing was planned, this is a no-op — complete gracefully without PR
+    if not planned_files:
+        logger.warning("No code changes were planned — Stage 6 is a no-op, skipping publish")
+        return {
+            **state,
+            "current_stage": "STAGE_6_PUBLISH",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "pr_url": None,
+            "pr_draft": False,
+            "branch_name": branch_name,
+        }
+
+    # If changes were planned but not applied — fail fast
+    if not applied:
+        logger.error(
+            f"Changes were planned for {planned_files} but none were applied. "
+            "Stage 3 did not implement the planned changes."
+        )
+        raise RuntimeError(
+            f"Stage 6 failed: planned changes for {planned_files} were not applied by Stage 3. "
+            "The coding agent must implement the planned file changes before publishing."
+        )
+
+    diff_output = state.get("diff_output", "") or ""
+    if not diff_output.strip():
+        logger.error("No diff output to publish — Stage 3 produced no actual changes")
+        raise RuntimeError(
+            "Stage 6 failed: diff output is empty. Stage 3 did not synthesize any code changes."
+        )
 
     # Commit changes
     commit_msg = f"fix: auto-resolved issue via Resolv [{state.get('issue_id', 'unknown')}]"
     remote_agent.commit_changes(worktree_path, patch_modified_files, commit_msg)
 
-    # Push branch
+    # Push branch (best-effort; worktree may have no changes)
     remote_agent.push_branch(worktree_path, "origin", branch_name)
+
+    # Resolve credentials from state for GitHub authentication
+    from config.models import CredentialsStore
+    cred_store = CredentialsStore()
+    state_creds = state.get("credentials_store")
+    if state_creds:
+        for key, val in state_creds.get("credentials", {}).items():
+            cred_store.add(
+                key=val.get("key", key),
+                value=val.get("value"),
+                env_ref=val.get("env_ref")
+            )
 
     # Open Pull Request (ready-for-review, not draft)
     from agents.tools.github_platform import GitHubPlatformSubAgent
     platform_agent = GitHubPlatformSubAgent(logger, project_config)
+    platform_agent._authenticate(credential_store=cred_store)
+
+    # If no GitHub token, skip PR creation but complete the stage gracefully
+    if not platform_agent.token:
+        logger.warning("GitHub token not configured. Skipping Pull Request creation.")
+        return {
+            **state,
+            "current_stage": "STAGE_6_PUBLISH",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "pr_url": None,
+            "pr_draft": False,
+            "branch_name": branch_name,
+        }
 
     # Generate PR summary
     diff_output = state.get("diff_output", "")
@@ -425,7 +679,7 @@ def stage_7_record(state: ResolvState) -> ResolvState:
     """
     Stage 7: Record — Finalize persistence, audit log, Langfuse telemetry.
     """
-    logger: ResolvLogger = state.get("_logger")
+    logger = _get_logger(state)
     logger.info("Stage 7: Record — Finalizing session telemetry...")
 
     session_path = Path(state["session_path"])

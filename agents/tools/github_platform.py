@@ -21,15 +21,35 @@ class GitHubPlatformSubAgent(SubAgent):
         self.token = None
         self.api_base = "https://api.github.com"
 
-    def _authenticate(self, token: Optional[str] = None):
-        """Authenticate with GitHub using token from credentials."""
+    def _authenticate(self, token: Optional[str] = None, credential_store: Optional["CredentialsStore"] = None):
+        """Authenticate with GitHub using token from credentials.
+
+        Resolution order:
+          1. Explicit token argument
+          2. Resolve from credential store (cred:KEY -> env:VAR -> literal)
+          3. Fall back to stored self.token
+        """
+        from config.models import CredentialsStore, resolve_config_value
+
         if token:
             self.token = token
-        elif self.token is None:
-            # Try to resolve from config
-            from config.models import CredentialsStore
-            # Token would be passed in from session credentials
-            pass
+            return
+
+        if credential_store is not None:
+            # Look for common credential keys in the store
+            for key in ("github_token", "GITHUB_TOKEN"):
+                try:
+                    resolved = credential_store.get(key, credential_store)
+                    if resolved:
+                        self.token = resolved
+                        self.logger.debug(f"GitHub token resolved from credential store key: {key}")
+                        return
+                except (KeyError, ValueError):
+                    continue
+
+        # If still no token, try to resolve any cred: ref stored in self.token
+        if self.token is None:
+            self.logger.warning("No GitHub token found in credential store")
 
     def _headers(self) -> dict:
         return {

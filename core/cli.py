@@ -50,18 +50,97 @@ def _prompt_yes_no(logger: ResolvLogger, message: str, default: bool = True) -> 
     return val in ("y", "yes")
 
 
+def parse_repo_source(source: str) -> tuple[str, str]:
+    """Parse a repo source into (base_host, path_after_host).
+
+    Accepts:
+      - https://github.com/org/repo
+      - github.com/org/repo
+      - git@github.com:org/repo.git
+    Returns (base, path). If no path is present, path is "".
+    """
+    s = (source or "").strip()
+    if not s:
+        return "", ""
+    # Strip protocol
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    # Handle scp-like syntax: git@host:path
+    if "@" in s and ":" in s:
+        after_at = s.split("@", 1)[1]
+        if ":" in after_at:
+            base, _, path = after_at.partition(":")
+            return base, path
+        return after_at, ""
+    # Plain host/path
+    if "/" in s:
+        base, _, path = s.partition("/")
+        return base, path
+    return s, ""
+
+
+def infer_source_from_base(base: str) -> str:
+    """Infer the platform source short name from a base host.
+
+    github.com -> github
+    gitlab.com -> gitlab
+    bitbucket.org -> bitbucket
+    anything else -> custom
+    """
+    b = (base or "").lower().strip()
+    if b == "github.com":
+        return "github"
+    if b == "gitlab.com":
+        return "gitlab"
+    if b == "bitbucket.org":
+        return "bitbucket"
+    return "custom"
+
+
 def _yaml_str(value: Optional[str]) -> str:
-    """Quote a value for YAML output if it contains characters that could
-    be misinterpreted (colon, backslash, slash) so PyYAML reads it as a
-    plain string literal. Returns the value wrapped in double quotes when
-    needed, else the raw value."""
+    """Quote a value for YAML output so PyYAML reads it as a plain string
+    literal. Single-quoted scalars treat backslash as literal (use these for
+    Windows paths); double-quoted scalars treat backslash as an escape
+    (use these for colons/slashes like URLs and env:/cred: prefixes)."""
     if value is None:
         return '""'
     s = str(value)
-    if any(c in s for c in (":", "\\", "/")) or s.strip() != s:
-        escaped = s.replace('"', '\\"')
-        return f'"{escaped}"'
-    return s
+    needs_quote = any(c in s for c in (":", "\\", "/")) or s.strip() != s
+    if not needs_quote:
+        return s
+    if "\\" in s:
+        # Single-quoted: backslash is literal; escape ' by doubling.
+        return "'" + s.replace("'", "''") + "'"
+    # Double-quoted: escape backslash and double-quote.
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def store_secret(store: CredentialsStore, config_key: str, value: str,
+                 store_key: str) -> str:
+    """If the field is a secret (by intent), move the value into the
+    credential store and return a cred: prefix referencing it.
+    Non-secret values are returned unchanged."""
+    if not value:
+        return value
+    if is_secret_field(config_key):
+        store.add(key=store_key, value=value)
+        return f"cred:{store_key}"
+    return value
+
+
+def _display_value(value: Optional[str], cred_store: CredentialsStore) -> str:
+    """Resolve cred:KEY references back to the stored value for user display.
+
+    Users never input cred: prefixes — they input raw values or env:VARNAME.
+    On re-runs, config.yaml stores cred:<key> internally, but we show the
+    underlying stored value (e.g. env:LANGFUSE_PUBLIC_KEY) so the user sees
+    what they originally entered."""
+    if not value or not isinstance(value, str) or not value.startswith("cred:"):
+        return value
+    key = value[5:]
+    raw = cred_store.get_raw(key)
+    return raw if raw else value
 
 
 # =============================================================================
@@ -111,8 +190,18 @@ def validate_issue_reference(ref: str) -> bool:
 @click.pass_context
 def main(ctx, project, verbose):
     """Resolv: Autonomous Issue-to-PR CLI Agent"""
+    # Log file is created per-session in cli.run once session_path is known.
+    # Here we set up a base logger; run() will re-create with log_file.
     logger = ResolvLogger(verbose=verbose)
     ctx.obj = logger
+
+    # Store project name if provided (loaded lazily by commands that need it)
+    if project:
+        ctx.obj._project_name = project
+    else:
+        ctx.obj._project_name = None
+    ctx.obj._global_config = None
+    ctx.obj._project_config = None
 
     # Store project name if provided (loaded lazily by commands that need it)
     if project:
@@ -175,24 +264,41 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
 
     ctx.obj._project_config = project_config
 
-    # Provider selection: --project flag > main group > no auto-selection
+    # Provider selection: --provider CLI option overrides default from config
     if provider:
         selected_provider = provider
         logger.info(f"LLM provider specified via --provider: {selected_provider}")
     elif global_config:
+        selected_provider = global_config.default_provider
         available = list(global_config.providers.keys())
-        default_provider = global_config.default_provider
-        logger.error("--provider is required. Specify an LLM provider.")
+        logger.info(f"LLM provider from config default: {selected_provider}")
         logger.info(f"Available providers: {', '.join(available)}")
-        logger.info(f"Default in config: {default_provider}")
-        logger.info("Re-run with: resolv --project <name> --provider <name> <issue_reference>")
-        ctx.exit(1)
+        logger.info("Override with: --provider <name>")
     else:
         logger.error("Global config not loaded. Cannot determine available providers.")
         ctx.exit(1)
 
     # Credential resolution (FAIL EARLY if missing)
     creds = resolve_credentials(logger, project_config)
+
+    # Pre-flight: resolve all provider API keys and telemetry keys
+    # Fail early if any cred:/env: reference cannot be resolved
+    try:
+        for prov_name, prov_cfg in global_config.providers.items():
+            resolved = resolve_config_value(prov_cfg.api_key, creds)
+            if not resolved:
+                raise ValueError(f"empty resolved api key for {prov_name}")
+            logger.debug(f"API key resolved for provider: {prov_name}")
+        if global_config.telemetry.host:
+            resolve_config_value(global_config.telemetry.host, creds)
+        if global_config.telemetry.public_key:
+            resolve_config_value(global_config.telemetry.public_key, creds)
+        if global_config.telemetry.secret_key:
+            resolve_config_value(global_config.telemetry.secret_key, creds)
+    except ValueError as e:
+        logger.error(f"Credential resolution failed: {e}")
+        logger.info("Set the required env vars and re-run 'resolv setup --project <name>'")
+        ctx.exit(1)
 
     # Extract issue ID from reference
     issue_id = issue_reference.split('/')[-1] if '/' in issue_reference else issue_reference
@@ -201,6 +307,15 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
 
     # Build session path
     session_path = f".resolv/sessions/{project_name}/{issue_id}"
+    Path(session_path).mkdir(parents=True, exist_ok=True)
+
+    # Set up per-session log file for silent debug review
+    log_file = str(Path(session_path) / "resolv.log")
+    # Re-create logger with log_file so all levels (incl. debug) are captured to disk
+    logger = ResolvLogger(verbose=verbose, log_file=log_file)
+    ctx.obj = logger
+    logger.debug(f"Log file: {log_file}")
+    logger.debug(f"Verbose mode: {verbose}")
 
     # Handle resume
     initial_state = None
@@ -222,6 +337,7 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
             "issue_id": issue_id,
             "project_name": project_name,
             "session_path": session_path,
+            "log_file": log_file,
             "current_stage": "STAGE_0_SETUP",
             "status": "IN_PROGRESS",
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -231,6 +347,7 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
             "credentials": creds.model_dump() if hasattr(creds, 'model_dump') else creds,
             "selected_provider": selected_provider,
             "selected_model": None,
+            "verbose": verbose,
             "context_data": None,
             "plan_data": None,
             "worktree_path": None,
@@ -249,7 +366,6 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
             "langfuse_trace_id": None,
             "token_usage": None,
             "cost_estimate": None,
-            "_logger": logger,
         }
 
     # Override timestamps
@@ -262,8 +378,12 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
         graph = build_graph()
         logger.info(f"Starting Resolv pipeline for issue: {issue_reference}")
 
+        session_id = str(uuid.uuid4())
+        initial_state["session_id"] = session_id
+        graph_config = {"configurable": {"thread_id": session_id}}
+
         final_state = None
-        for event in graph.stream(initial_state, stream_mode="values"):
+        for event in graph.stream(initial_state, stream_mode="values", config=graph_config):
             final_state = event
             current_stage = event.get("current_stage", "unknown")
             logger.info(f"Stage progress: {current_stage}")
@@ -280,10 +400,9 @@ def run(ctx, issue_reference, project, provider, analysis, resume, dry_run, verb
     except SystemExit:
         raise
     except Exception as e:
+        import traceback
         logger.error(f"Pipeline failed: {e}")
-        if verbose:
-            import traceback
-            logger.debug(traceback.format_exc())
+        traceback.print_exc()
         ctx.exit(1)
 
 
@@ -350,17 +469,16 @@ def init(ctx, verbose):
     # Secrets collected by intent are stored here and referenced as cred:<key>
     # from config.yaml so secrets never live in config.yaml.
     cred_store = CredentialsStore()
-
-    def store_secret(config_key: str, value: str, store_key: str) -> str:
-        """If the field is a secret (by intent), move the value into the
-        credential store and return a cred: prefix referencing it.
-        Non-secret values are returned unchanged."""
-        if not value:
-            return value
-        if is_secret_field(config_key):
-            cred_store.add(key=store_key, value=value)
-            return f"cred:{store_key}"
-        return value
+    # Load existing credentials so we can display original user values (env:VARNAME)
+    # on re-runs instead of the internal cred:<key> references.
+    existing_cred_path = get_resolv_dir() / "credentials.json"
+    if existing_cred_path.exists():
+        try:
+            existing_store = load_credentials(str(existing_cred_path))
+            for key, entry in existing_store.credentials.items():
+                cred_store.add(key=key, value=entry.value, env_ref=entry.env_ref)
+        except Exception as e:
+            logger.warning(f"Could not load existing credentials: {e}")
 
     # --- Stage 1: Default Provider ---
     logger.info("Step 1: Default LLM Provider")
@@ -384,9 +502,12 @@ def init(ctx, verbose):
     logger.info("Step 2: Telemetry (Langfuse)")
     telemetry_enabled = _prompt_yes_no(logger, "Enable Langfuse telemetry?", default=True)
 
-    langfuse_host_default = existing_config.get("telemetry", {}).get("host", "http://localhost:3000") if existing_config else "http://localhost:3000"
-    langfuse_public_key_default = existing_config.get("telemetry", {}).get("public_key", "env:LANGFUSE_PUBLIC_KEY") if existing_config else "env:LANGFUSE_PUBLIC_KEY"
-    langfuse_secret_key_default = existing_config.get("telemetry", {}).get("secret_key", "env:LANGFUSE_SECRET_KEY") if existing_config else "env:LANGFUSE_SECRET_KEY"
+    langfuse_host_default = _display_value(
+        existing_config.get("telemetry", {}).get("host", "http://localhost:3000") if existing_config else "http://localhost:3000", cred_store)
+    langfuse_public_key_default = _display_value(
+        existing_config.get("telemetry", {}).get("public_key", "env:LANGFUSE_PUBLIC_KEY") if existing_config else "env:LANGFUSE_PUBLIC_KEY", cred_store)
+    langfuse_secret_key_default = _display_value(
+        existing_config.get("telemetry", {}).get("secret_key", "env:LANGFUSE_SECRET_KEY") if existing_config else "env:LANGFUSE_SECRET_KEY", cred_store)
 
     langfuse_host = "http://localhost:3000"
     langfuse_public_key = "env:LANGFUSE_PUBLIC_KEY"
@@ -398,8 +519,8 @@ def init(ctx, verbose):
         langfuse_secret_key = _prompt(logger, "Secret key (raw value or env:VARNAME)", default=langfuse_secret_key_default)
 
         # Secrets are stored in the credential store, referenced as cred:<key>
-        langfuse_public_key = store_secret("public_key", langfuse_public_key, "langfuse_public_key")
-        langfuse_secret_key = store_secret("secret_key", langfuse_secret_key, "langfuse_secret_key")
+        langfuse_public_key = store_secret(cred_store, "public_key", langfuse_public_key, "langfuse_public_key")
+        langfuse_secret_key = store_secret(cred_store, "secret_key", langfuse_secret_key, "langfuse_secret_key")
 
     # --- Step 3: Clone Root Directory ---
     logger.info("Step 3: Clone Root Directory")
@@ -426,13 +547,14 @@ def init(ctx, verbose):
         }
         model_default = existing_prov.get("model", model_defaults.get(prov_name, "")) if existing_prov else model_defaults.get(prov_name, "")
         model = _prompt(logger, f"  Model for {prov_name} (raw value or env:VARNAME)", default=model_default)
-        api_key_default = existing_prov.get("api_key", f"env:{prov_name.upper()}_API_KEY") if existing_prov else f"env:{prov_name.upper()}_API_KEY"
+        api_key_default = _display_value(
+            existing_prov.get("api_key", f"env:{prov_name.upper()}_API_KEY") if existing_prov else f"env:{prov_name.upper()}_API_KEY", cred_store)
         api_key = _prompt(logger, f"  API key for {prov_name} (raw value or env:VARNAME)", default=api_key_default)
         api_base_default = existing_prov.get("api_base", "") if existing_prov else ""
         api_base = _prompt(logger, f"  API base URL for {prov_name} (optional, raw value or env:VARNAME)", default=api_base_default)
 
         # api_key is a secret -> stored in credential store as cred:<store_key>
-        api_key = store_secret("api_key", api_key, f"{prov_name}_api_key")
+        api_key = store_secret(cred_store, "api_key", api_key, f"{prov_name}_api_key")
 
         providers[prov_name] = {
             "model": model,
@@ -550,58 +672,112 @@ def setup(ctx, project, verbose):
     logger.info("  Press Enter to accept defaults shown in brackets.")
 
     # --- Step 1: Primary Repository ---
-    logger.info("Step 1: Primary Repository")
     existing_repo = existing_project.get("repos", {}).get("primary", {}) if existing_project else {}
-    repo_source_default = existing_repo.get("source", "") if existing_repo else ""
+    existing_source = existing_repo.get("source", "") if existing_repo else ""
+    existing_base = existing_repo.get("base", "") if existing_repo else ""
+    existing_path = existing_repo.get("path", "") if existing_repo else ""
 
-    # Repository source selection (options + custom)
     logger.info("Step 1: Primary Repository")
-    logger.info("    1. github.com")
-    logger.info("    2. gitlab.com")
-    logger.info("    3. bitbucket.org")
-    logger.info("    4. Custom URL")
-    logger.prompt(f"Choice [1-4] (default: 1): ")
-    source_choice = input("").strip() or "1"
-    source_map = {"1": "github.com", "2": "gitlab.com", "3": "bitbucket.org", "4": "custom"}
-    source_choice = source_map.get(source_choice, "custom")
+    logger.info("  Specify the primary repository Resolv will work on.")
 
-    if source_choice == "custom":
-        repo_source = _prompt(logger, "Repository source URL (raw value or env:VARNAME)", default=repo_source_default)
-        if not repo_source:
-            logger.error("Repository source is required.")
-            ctx.exit(1)
+    # Source platform selection
+    platforms = [
+        (1, "github", "github.com"),
+        (2, "gitlab", "gitlab.com"),
+        (3, "bitbucket", "bitbucket.org"),
+        (4, "custom", ""),
+    ]
+    platform_default_index = 1
+    for i, (num, name, base) in enumerate(platforms):
+        if name == existing_source:
+            platform_default_index = num
+            break
+    for num, name, base in platforms:
+        base_str = f" ({base})" if base else ""
+        marker = " [default]" if num == platform_default_index else ""
+        logger.info(f"    {num}. {name}{base_str}{marker}")
+    logger.prompt(f"Source platform [1-4] (default: {platform_default_index}): ")
+    platform_choice = input("").strip() or str(platform_default_index)
+    platform_map = {"1": "github", "2": "gitlab", "3": "bitbucket", "4": "custom"}
+    repo_source = platform_map.get(
+        platform_choice,
+        platform_choice if platform_choice in ("github", "gitlab", "bitbucket", "custom") else "github",
+    )
+
+    # Suggested base from selected platform (or existing)
+    suggested_base = existing_base if existing_base else ""
+    for num, name, base in platforms:
+        if name == repo_source and base:
+            suggested_base = base
+            break
+
+    # Ask for repository link — default to previously entered base/path if re-running
+    if existing_base and existing_path:
+        link_default = f"{existing_base}/{existing_path}"
+    elif existing_source and not existing_source.startswith("env:"):
+        link_default = existing_source
     else:
-        repo_source = source_choice
-        logger.info(f"  Repository source: {repo_source}")
+        link_default = ""
+    repo_link = _prompt(logger, f"  Repository link (e.g. {suggested_base}/org/repo) (raw value or env:VARNAME)", default=link_default)
+    if not repo_link:
+        logger.error("Repository link is required.")
+        ctx.exit(1)
+
+    repo_base = ""
+    repo_path_part = ""
+
+    if repo_link.startswith("env:"):
+        # Cannot parse an env reference now; ask base and path separately
+        logger.info("  Link is an env reference — base and path must be entered manually.")
+        repo_base = _prompt(logger, f"  Base host (e.g. {suggested_base})", default=suggested_base)
+        repo_path_part = _prompt(logger, f"  Path (e.g. org/repo)", default=existing_path)
+        if not repo_base:
+            repo_base = suggested_base
+    else:
+        parsed_base, parsed_path = parse_repo_source(repo_link)
+        if parsed_base and parsed_path:
+            # Able to infer base and path from the link — display as defaults
+            inferred_source = infer_source_from_base(parsed_base)
+            logger.info(f"  Inferred source/platform: {inferred_source}")
+            logger.info(f"  Inferred base host: {parsed_base}")
+            logger.info(f"  Inferred path: {parsed_path}")
+            repo_source = _prompt(logger, f"  Source/platform", default=inferred_source or repo_source)
+            repo_base = _prompt(logger, f"  Base host", default=parsed_base or suggested_base)
+            repo_path_part = _prompt(logger, f"  Path", default=parsed_path)
+        else:
+            # Not able to infer — ask for parts one by one with suggested defaults
+            logger.info("  Could not infer base and path from the link; please enter them manually.")
+            repo_base = _prompt(logger, f"  Base host (e.g. {suggested_base})", default=suggested_base)
+            repo_path_part = _prompt(logger, f"  Path (e.g. org/repo)", default=existing_path)
+            if not repo_base:
+                repo_base = suggested_base
+
+    if not repo_base or not repo_path_part:
+        logger.error("Base host and path are required.")
+        ctx.exit(1)
 
     # Auto-compute repopath as clone_root/<project>
     repo_path = str(Path(clone_root) / project)
 
-    # Derive credential key from repo source host
-    existing_cred_key = existing_repo.get("credentialkey", "") if existing_repo else ""
-    credential_key = existing_cred_key if existing_cred_key else ""
-    if not credential_key:
-        host_match = re.search(r'://([^/]+)/', repo_source)
-        if host_match:
-            host = host_match.group(1)
-            host_key_map = {
-                'github.com': 'GITHUB_TOKEN',
-                'anthropic.com': 'GITLAB_TOKEN',
-                'bitbucket.org': 'BITBUCKET_TOKEN',
-            }
-            credential_key = host_key_map.get(host, f"{host.replace('.', '_').upper()}_TOKEN")
-        else:
-            credential_key = "GITHUB_TOKEN"
-
-    credential_value = _prompt(logger, f"  Credential value (raw value or env:VARNAME)")
-    # Secrets (by intent: token/key/credential) are stored in the credential
-    # store and referenced as cred:<key> from config.yaml — never raw in config.
+    # Load existing credential store so we can show the previous credential as default
     credential_store = CredentialsStore()
-    credential_config_ref = ""  # what gets written into config.yaml for this secret
+    existing_cred_path = get_resolv_dir() / "credentials.json"
+    if existing_cred_path.exists():
+        try:
+            existing_store = load_credentials(str(existing_cred_path))
+            for key, entry in existing_store.credentials.items():
+                credential_store.add(key=key, value=entry.value, env_ref=entry.env_ref)
+        except Exception as e:
+            logger.warning(f"Could not load existing credentials: {e}")
+
+    # Prompt for credential value — show existing as default, specific message per source
+    credential_key = f"{repo_source}_token"
+    existing_cred_value = credential_store.get_raw(credential_key)
+    cred_display = _display_value(existing_cred_value, credential_store) if existing_cred_value else ""
+    cred_msg = f"  {repo_source} API key/token for {repo_base} (raw value or env:VARNAME)"
+    credential_value = _prompt(logger, cred_msg, default=cred_display)
     if credential_value:
-        credential_config_ref = store_secret("credentialkey", credential_value, credential_key)
         credential_store.add(key=credential_key, value=credential_value)
-    token_mappings = {credential_key: credential_config_ref} if credential_config_ref else {}
 
     build_cmd = _prompt(logger, "Build command (optional) (raw value or env:VARNAME)", default="")
     test_cmd = _prompt(logger, "Test command (optional) (raw value or env:VARNAME)", default="")
@@ -619,19 +795,24 @@ def setup(ctx, project, verbose):
             num_refs = 1
         for i in range(num_refs):
             logger.info(f"  Reference Repo {i + 1}:")
-            r_source = _prompt(logger, "    Source (e.g., github.com/org/repo) (raw value or env:VARNAME)")
-            r_cred_val = _prompt(logger, f"    Credential value (raw value or env:VARNAME)")
+            r_source = _prompt(logger, "    Repository source (e.g. github.com/org/repo) (raw value or env:VARNAME)")
             if r_source:
-                # Store reference repo secret in the credential store, reference as cred:<key>
-                ref_cred_config_ref = ""
+                if r_source.startswith("env:"):
+                    r_base = ""
+                    r_path_part = ""
+                    r_source_platform = "custom"
+                else:
+                    r_base, r_path_part = parse_repo_source(r_source)
+                    r_source_platform = infer_source_from_base(r_base)
+                # Prompt for reference repo credential; stored in global credential store
+                r_cred_val = _prompt(logger, f"    Credential value (raw value or env:VARNAME)")
                 if r_cred_val:
-                    ref_cred_config_ref = store_secret("credentialkey", r_cred_val, "CREDENTIAL_TOKEN")
-                    credential_store.add(key="CREDENTIAL_TOKEN", value=r_cred_val)
+                    credential_store.add(key=f"{r_source_platform}_token_ref_{i}", value=r_cred_val)
                 reference_repos.append({
-                    "source": r_source,
+                    "source": r_source_platform,
+                    "base": r_base,
+                    "path": r_path_part,
                     "repopath": str(Path(clone_root) / f"ref_{i}"),
-                    "credentialkey": "CREDENTIAL_TOKEN",
-                    "credential_map": {"CREDENTIAL_TOKEN": ref_cred_config_ref} if ref_cred_config_ref else {},
                 })
 
     # --- Step 3: Database ---
@@ -646,19 +827,6 @@ def setup(ctx, project, verbose):
             "migrations_path": migrations_path if migrations_path else None,
         }
 
-    # --- Step 4: Token Mappings for reference repo credentials only ---
-    logger.info("Step 4: Token Mappings (raw value or env:VARNAME)")
-    all_cred_keys = set()
-    for r in reference_repos:
-        all_cred_keys.add(r.get("credentialkey", "CREDENTIAL_TOKEN"))
-    for ck in sorted(all_cred_keys):
-        if ck in token_mappings:
-            continue  # already set from primary repo
-        val = _prompt(logger, f"  {ck} (raw value or env:VARNAME)", default="")
-        if val:
-            token_mappings[ck] = store_secret("credentialkey", val, ck)
-            credential_store.add(key=ck, value=val)
-
     # Build project config YAML (all inputs collected -- write atomically at end)
     # Quote Windows paths with backslashes - escape backslashes for YAML
     def yaml_quote(s: str) -> str:
@@ -668,8 +836,9 @@ def setup(ctx, project, verbose):
 
     repo_entry = f"""  primary:
     source: {repo_source_quoted}
-    repopath: {repo_path_quoted}
-    credentialkey: {credential_key}"""
+    base: {yaml_quote(repo_base) if repo_base else "null"}
+    path: {yaml_quote(repo_path_part) if repo_path_part else "null"}
+    repopath: {repo_path_quoted}"""
     if build_cmd:
         repo_entry += f"\n    buildcmd: {build_cmd}"
     if test_cmd:
@@ -677,42 +846,32 @@ def setup(ctx, project, verbose):
     if lint_cmd:
         repo_entry += f"\n    lintcmd: {lint_cmd}"
 
-    ref_section = "  reference: []\n"
+    ref_section = "reference: []\n"
     if reference_repos:
-        ref_section = "  reference:\n"
+        ref_section = "reference:\n"
         for r in reference_repos:
             r_source_quoted = yaml_quote(r["source"])
-            r_path_quoted = yaml_quote(r["repopath"])
-            ref_section += f"    - source: {r_source_quoted}\n"
-            ref_section += f"      repopath: {r_path_quoted}\n"
-            ref_section += f"      credentialkey: {r['credentialkey']}\n"
-            if r.get("credential_map"):
-                for ck, cm in r["credential_map"].items():
-                    if "env" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: env:{cm['env']}\\n"
-                    elif "raw" in cm:
-                        ref_section += f"      credential_map:\n        {ck}: {cm['raw']}\\n"
+            r_base_quoted = yaml_quote(r.get("base", "")) if r.get("base") else "null"
+            r_path_quoted = yaml_quote(r.get("path", "")) if r.get("path") else "null"
+            r_repopath_quoted = yaml_quote(r["repopath"])
+            ref_section += f"- source: {r_source_quoted}\n"
+            ref_section += f"  base: {r_base_quoted}\n"
+            ref_section += f"  path: {r_path_quoted}\n"
+            ref_section += f"  repopath: {r_repopath_quoted}\n"
 
-    data_section = "  database:\\n    schema_source: null\\n    migrations_path: null\\n  other: []\\n"
+    data_section = "data: {}\n"
     if database_config:
-        data_section = "  data:\\n    database:\\n"
+        data_section = "data:\n  database:\n"
         ds = database_config.get("schema_source") or "null"
         mp = database_config.get("migrations_path") or "null"
         ds_quoted = yaml_quote(ds) if ds else "null"
         mp_quoted = yaml_quote(mp) if mp else "null"
-        data_section += f"      schema_source: {ds_quoted}\\n      migrations_path: {mp_quoted}\\n"
-
-    tokens_section = "tokens: {}\\n"
-    if token_mappings:
-        tokens_section = "tokens:\\n"
-        for ck, ref in token_mappings.items():
-            if ref:
-                tokens_section += f"  {ck}: {_yaml_str(ref)}\\n"
+        data_section += f"    schema_source: {ds_quoted}\n    migrations_path: {mp_quoted}\n"
 
     project_config_yaml = f"""name: {project}
 repos:
 {repo_entry}
-{ref_section}{data_section}{tokens_section}"""
+{ref_section}{data_section}"""
 
     # Write atomically
     project_config_path.write_text(project_config_yaml)

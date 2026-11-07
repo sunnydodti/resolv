@@ -158,15 +158,11 @@ class CredentialsStore(BaseModel):
         return self.credentials[key].resolve(credential_store)
 
     def save_to_file(self, path: str):
-        """Persist credentials to disk (without resolved values for security)."""
-        data = {
-            "credentials": {
-                k: {"key": v.key, "value": v.value, "env_ref": v.env_ref}
-                for k, v in self.credentials.items()
-            }
-        }
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
+        """Persist credentials to disk (without resolved values for security).
+
+        Accepts either a directory (joins "credentials.json") or a full file path.
+        """
+        save_credentials(path, self)
 
 
 # =============================================================================
@@ -182,9 +178,11 @@ class ProviderConfig(BaseModel):
 # Repository Model
 # =============================================================================
 class RepoConfig(BaseModel):
-    source: str
+    source: str  # platform: github, gitlab, bitbucket, custom, etc.
     repopath: str
-    credentialkey: str  # key into the credential store
+    base: Optional[str] = None  # base host: github.com, gitlab.com, self-hosted domain, etc.
+    path: Optional[str] = None  # path after base: /org/folder/etc
+    credentialkey: Optional[str] = None  # key into the credential store (optional; credentials live in credentials.json)
     buildcmd: Optional[str] = None
     testcmd: Optional[str] = None
     lintcmd: Optional[str] = None
@@ -208,11 +206,9 @@ class OtherDataSource(BaseModel):
 # =============================================================================
 class ProjectConfig(BaseModel):
     name: str
-    description: str
     repos: Dict[str, RepoConfig]
     reference: List[RepoConfig] = Field(default_factory=list)
     data: Optional[Dict[str, Any]] = None
-    tokens: Optional[Dict[str, Any]] = None  # {key: "env:VAR" | literal | {"env": "..."}}
 
 
 # =============================================================================
@@ -233,6 +229,7 @@ class GlobalConfig(BaseModel):
     default_provider: str
     telemetry: TelemetryConfig
     providers: Dict[str, ProviderConfig]
+    clone_root: Optional[str] = None  # base directory for cloned repositories
 
 
 # =============================================================================
@@ -378,28 +375,6 @@ def load_project_config(project_name: str) -> ProjectConfig:
     conf = load_yaml(path)
     conf = _migrate_config_dict(conf)
     return ProjectConfig(**conf)
-
-
-def _normalize_token_value(val: Any) -> Optional[str]:
-    """Normalize a tokens mapping value to a prefixed string.
-
-    Accepts:
-      - "env:GITHUB_TOKEN"  -> "env:GITHUB_TOKEN"
-      - "sk-1234"           -> "sk-1234" (literal)
-      - {"env": "GITHUB_TOKEN"} -> "env:GITHUB_TOKEN"
-      - {"raw": "sk-1234"}  -> "sk-1234"
-      - None                -> None
-    """
-    if val is None:
-        return None
-    if isinstance(val, str):
-        return val
-    if isinstance(val, dict):
-        if "env" in val and val["env"]:
-            return f"env:{val['env']}"
-        if "raw" in val and val["raw"] is not None:
-            return str(val["raw"])
-    return None
 
 
 def load_credentials(session_path: str) -> CredentialsStore:

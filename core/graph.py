@@ -77,17 +77,23 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     with open(metadata_path, "w") as f:
         json.dump(metadata.model_dump(), f, indent=2, default=str)
 
-    # Initialize credentials store
+    # Initialize credentials store from state (loaded from global credential store)
     from agents.tools.credentials import CredentialsSubAgent
-    from core.logger import ResolvLogger as RL
+    from config.models import CredentialsStore, save_credentials
     cred_agent = CredentialsSubAgent(logger, None)
     cred_store = CredentialsStore()
+    state_creds = state.get("credentials")
+    if state_creds:
+        for key, val in state_creds.get("credentials", {}).items():
+            cred_store.add(
+                key=val.get("key", key),
+                value=val.get("value"),
+                env_ref=val.get("env_ref")
+            )
     cred_agent.save_to_session(str(session_path), cred_store)
 
     # Save credentials.json
-    cred_path = session_path / "credentials.json"
-    with open(cred_path, "w") as f:
-        json.dump({"credentials": {}}, f, indent=2)
+    save_credentials(str(session_path), cred_store)
 
     logger.success(f"Stage 0 Complete — Workspace ready at {session_path}")
 

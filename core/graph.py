@@ -310,8 +310,12 @@ def stage_2_plan(state: ResolvState) -> ResolvState:
         providers = {}
         for name, prov in gc_dict.get("providers", {}).items():
             providers[name] = ProviderConfig(**prov)
+        default_provider = gc_dict.get("default_provider", "openrouter")
+        # Ensure default_provider exists in configured providers
+        if default_provider not in providers and providers:
+            default_provider = next(iter(providers))
         global_config = GlobalConfig(
-            default_provider=gc_dict.get("default_provider", "openrouter"),
+            default_provider=default_provider,
             telemetry=gc_dict.get("telemetry", {}),
             providers=providers,
             clone_root=gc_dict.get("clone_root"),
@@ -401,8 +405,12 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
         providers = {}
         for name, prov in gc_dict.get("providers", {}).items():
             providers[name] = ProviderConfig(**prov)
+        default_provider = gc_dict.get("default_provider", "openrouter")
+        # Ensure default_provider exists in configured providers
+        if default_provider not in providers and providers:
+            default_provider = next(iter(providers))
         global_config = GlobalConfig(
-            default_provider=gc_dict.get("default_provider", "openrouter"),
+            default_provider=default_provider,
             telemetry=gc_dict.get("telemetry", {}),
             providers=providers,
             clone_root=gc_dict.get("clone_root"),
@@ -509,6 +517,13 @@ def stage_4_build_test(state: ResolvState) -> ResolvState:
     if not test_cmd:
         logger.warning("No test command configured for this project — skipping tests")
         test_result = {"returncode": 0, "stdout": "", "stderr": "skipped: no test command configured"}
+        return {
+            **state,
+            "current_stage": "STAGE_4_BUILD_TEST",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "test_results": test_result,
+            "error_trace": None,
+        }
     else:
         test_result = runner.run_command(test_cmd)
         if test_result["returncode"] != 0:

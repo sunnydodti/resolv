@@ -151,6 +151,8 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
     # Initialize credentials store from state (loaded from global credential store)
     from agents.tools.credentials import CredentialsSubAgent
     from config.models import CredentialsStore, save_credentials
+    from agents.tools.github_platform import GitHubPlatformSubAgent
+    
     cred_agent = CredentialsSubAgent(logger, None)
     cred_store = CredentialsStore()
     state_creds = state.get("credentials")
@@ -165,6 +167,31 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
 
     # Save credentials.json
     save_credentials(str(session_path), cred_store)
+
+    # Initialize project_config early
+    project_config = state.get("project_config", {})
+
+    # Resolve primary repo full name
+    primary = {}
+    if isinstance(project_config, dict):
+        repos = project_config.get("repos", {})
+        primary = repos.get("primary", {})
+    
+    repo_full_name = None
+    if isinstance(primary, dict):
+        base = primary.get("base")
+        path = primary.get("path")
+        if base == "github.com" and path:
+            repo_full_name = path
+
+    # Pre-flight credential validation
+    from agents.tools.github_platform import GitHubPlatformSubAgent
+    platform_agent = GitHubPlatformSubAgent(logger, project_config)
+    platform_agent._authenticate(credential_store=cred_store)
+            
+    if not platform_agent.validate_credentials(repo_full_name=repo_full_name):
+        logger.error("GitHub credential validation failed. Cannot proceed.")
+        raise RuntimeError("GitHub authentication failed. Please check your GitHub token and repository access permissions.")
 
     # Clone the primary repository into clone_root/<project>
     global_config = state.get("global_config", {})
@@ -219,7 +246,10 @@ def stage_0_setup(state: ResolvState) -> ResolvState:
         "pr_url": None,
         "pr_draft": False,
         "branch_name": None,
-        # Expose resolved credential store to later stages
+        "repo_full_name": repo_full_name,
+        # Persist config, issue_id, and credentials so subsequent stages don't lose them
+        "project_config": project_config,
+        "issue_id": issue_id,
         "credentials_store": cred_store.model_dump(),
     }
 
@@ -432,7 +462,11 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
     if "primary" in repos:
         primary_repo = repos["primary"].get("repopath", "./") if isinstance(repos["primary"], dict) else "./"
 
-    feature_branch = f"resolv/{state.get('issue_id') or state.get('issue_reference', 'unknown').split('/')[-1] if state.get('issue_reference') else 'unknown'}"
+    # Determine branch name once and persist it
+    feature_branch = state.get("branch_name")
+    if not feature_branch:
+        issue_id = state.get('issue_id') or state.get('issue_reference', 'unknown').split('/')[-1]
+        feature_branch = f"resolv/{issue_id}"
 
     # Create worktree
     worktree_path = coding_agent.git_tool.init_session_workspace(primary_repo, feature_branch)
@@ -454,6 +488,7 @@ def _stage_3_apply_impl(state: ResolvState) -> ResolvState:
         "current_stage": "STAGE_3_APPLY",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "worktree_path": worktree_path,
+        "branch_name": feature_branch,
         "modified_files": patch_result.modified_files,
         "diff_output": patch_result.diff,
     }
@@ -701,6 +736,9 @@ def stage_6_publish(state: ResolvState) -> ResolvState:
             "Stage 6 failed: diff output is empty. Stage 3 did not synthesize any code changes."
         )
 
+    # Resolve repo_full_name from state
+    repo_full_name = state.get("repo_full_name")
+
     # Commit changes
     commit_msg = f"fix: auto-resolved issue via Resolv [{state.get('issue_id', 'unknown')}]"
     remote_agent.commit_changes(worktree_path, patch_modified_files, commit_msg)
@@ -708,46 +746,50 @@ def stage_6_publish(state: ResolvState) -> ResolvState:
     # Push branch (best-effort; worktree may have no changes)
     remote_agent.push_branch(worktree_path, "origin", branch_name)
 
-    # Resolve credentials from state for GitHub authentication
-    from config.models import CredentialsStore
-    cred_store = CredentialsStore()
-    state_creds = state.get("credentials_store")
-    if state_creds:
-        for key, val in state_creds.get("credentials", {}).items():
-            cred_store.add(
-                key=val.get("key", key),
-                value=val.get("value"),
-                env_ref=val.get("env_ref")
-            )
+    # Resolve credentials from the session file directly (source of truth)
+    from config.models import load_credentials
+    
+    session_path = Path(state["session_path"])
+    cred_store = load_credentials(str(session_path))
 
     # Open Pull Request (ready-for-review, not draft)
     from agents.tools.github_platform import GitHubPlatformSubAgent
     platform_agent = GitHubPlatformSubAgent(logger, project_config)
-    platform_agent._authenticate(credential_store=cred_store)
+    
+    # Resolve primary repo full name
+    primary = {}
+    if isinstance(project_config, dict):
+        repos = project_config.get("repos", {})
+        primary = repos.get("primary", {})
+    
+    repo_full_name = None
+    if isinstance(primary, dict):
+        base = primary.get("base")
+        path = primary.get("path")
+        if base == "github.com" and path:
+            repo_full_name = path
 
-    # If no GitHub token, skip PR creation but complete the stage gracefully
-    if not platform_agent.token:
-        logger.warning("GitHub token not configured. Skipping Pull Request creation.")
-        return {
-            **state,
-            "current_stage": "STAGE_6_PUBLISH",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "pr_url": None,
-            "pr_draft": False,
-            "branch_name": branch_name,
-        }
+    # Pre-flight credential validation
+    platform_agent._authenticate(credential_store=cred_store)
+    if not platform_agent.validate_credentials(repo_full_name=repo_full_name):
+        logger.error("GitHub credential validation failed. Cannot proceed with publishing.")
+        raise RuntimeError("GitHub authentication failed. Please check your GitHub token and repository access permissions.")
+
 
     # Generate PR summary
     diff_output = state.get("diff_output", "")
     test_results = state.get("test_results", {})
     pr_summary = platform_agent.generate_pr_summary(diff_output, test_results)
 
+
+
     pr_url = platform_agent.open_pull_request(
         title=pr_summary.get("title", f"fix: auto-resolved issue [{state.get('issue_id', 'unknown')}]"),
         body=pr_summary.get("body", ""),
         head=branch_name,
         base="main",
-        draft=False,  # Always ready-for-review per requirements
+        draft=False,
+        repo_full_name=repo_full_name,
     )
 
     logger.success(f"Stage 6 Complete — Pull Request opened: {pr_url}")

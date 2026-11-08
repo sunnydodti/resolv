@@ -65,7 +65,7 @@ class RemoteGitSubAgent(SubAgent):
             return
         try:
             subprocess.run(
-                ["git", "--git-dir", str(repo / ".git"), "--work-tree", str(repo), "push", remote, branch],
+                ["git", "--git-dir", str(repo / ".git"), "--work-tree", str(repo), "push", remote, f"HEAD:{branch}"],
                 check=True,
                 capture_output=True,
                 text=True,

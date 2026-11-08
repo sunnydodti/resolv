@@ -23,6 +23,9 @@ class SessionMetadata(BaseModel):
     analysis_only: bool = False
 
 
+    analysis_only: bool = False
+
+
 class ResolvState(TypedDict):
     """
     Core LangGraph state object.
@@ -31,6 +34,7 @@ class ResolvState(TypedDict):
     # Session identity
     session_id: str
     issue_reference: str
+    issue_id: str  # Parsed from state; strictly required for commit message footer
     project_name: str
     session_path: str  # ~/.resolv/sessions/<project>/<issue_id>
 

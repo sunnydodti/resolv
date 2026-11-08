@@ -2,6 +2,16 @@ from agents.tools.remote_git import RemoteGitSubAgent
 from core.logger import ResolvLogger
 from config.models import load_global_config
 
+COMMIT_MESSAGE_TEMPLATE = '{type}({scope}): {description}\n\n{body}\n\nCloses: #{issue_id}'
+
+LLM_COMMIT_PROMPT = """Generate a conventional commit message with these constraints:
+- Subject: max 50 characters, format type(scope): description
+- Body: max 72 characters per line
+- Footer: Closes: #{issue_id}"""
+
+def run_stage_6(logger: ResolvLogger, patch_result, project_config, state=None):
+    """Stage 6: Publish — Commit, push, and open Pull Request."""
+    logger.info("Stage 6: Publish — Committing changes and opening PR...")
 def run_stage_6(logger: ResolvLogger, patch_result, project_config):
     """Stage 6: Publish — Commit, push, and open Pull Request."""
     logger.info("Stage 6: Publish — Committing changes and opening PR...")

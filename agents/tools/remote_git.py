@@ -82,14 +82,17 @@ class RemoteGitSubAgent(SubAgent):
                 self.logger.error(f"Push failed: {stderr}")
             raise e
 
-    def commit_changes(self, repo_path: str, files: List[str], message: str):
+                self.logger.error(f"Push failed: {stderr}")
+            raise e
+
+    def commit_changes(self, repo_path: str, files: List[str], subject: str, body: str = "", footer: str = ""):
         """Commit changes in the repository.
 
         Uses `git -C <repo_path>` instead of --git-dir/--work-tree because
         git worktrees store .git as a file, and --git-dir pointing to that
         file does not resolve correctly on Windows.
         """
-        self.logger.info(f"Committing {len(files)} file(s): {message}")
+        self.logger.info(f"Committing {len(files)} file(s): {subject}")
         repo = Path(repo_path)
         if not repo.exists():
             self.logger.error(f"Repository directory not found: {repo_path}")
@@ -106,8 +109,15 @@ class RemoteGitSubAgent(SubAgent):
                 capture_output=True,
                 text=True,
             )
+            commit_cmd = ["git", "-C", str(repo_path), "commit"]
+            if subject:
+                commit_cmd.extend(["-m", subject])
+            if body:
+                commit_cmd.extend(["-m", body])
+            if footer:
+                commit_cmd.extend(["-m", footer])
             subprocess.run(
-                ["git", "-C", str(repo_path), "commit", "-m", message],
+                commit_cmd,
                 check=True,
                 capture_output=True,
                 text=True,

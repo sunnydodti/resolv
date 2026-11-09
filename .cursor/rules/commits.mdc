@@ -1,0 +1,38 @@
+# Commit Message Guidelines
+
+Always draft commits in Conventional Commits format.
+
+## Commit Format
+
+<type>(<scope>): <subject>
+
+<blank line>
+
+<body>
+
+<blank line>
+
+<footer>
+
+## Required Scopes
+
+The following scopes are required:
+- `agents/`
+- `core/`
+- `config/`
+
+## Rules
+
+1. **Subject line**: Must be under 50 characters
+2. **Body lines**: Each line must be under 72 characters
+3. **Footer**: Must include issue references (e.g., `Closes #123`, `Fixes #456`, `Refs #789`)
+4. **Type**: Use conventional commit types (feat, fix, docs, style, refactor, test, chore, etc.)
+
+## Example
+
+feat(agents/): add agent registration endpoint
+
+Implement the POST /agents endpoint to allow agent registration.
+Includes validation for agent credentials and capabilities.
+
+Closes #123

@@ -76,6 +76,8 @@ class ResolvState(TypedDict):
     pr_url: Optional[str]
     pr_draft: bool
     branch_name: Optional[str]
+    issue_id: Optional[str]  # Parsed from state
+
 
     # Stage 7: Record outputs
     audit_log_path: Optional[str]

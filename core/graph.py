@@ -740,8 +740,16 @@ def stage_6_publish(state: ResolvState) -> ResolvState:
     repo_full_name = state.get("repo_full_name")
 
     # Commit changes
-    commit_msg = f"fix: auto-resolved issue via Resolv [{state.get('issue_id', 'unknown')}]"
-    remote_agent.commit_changes(worktree_path, patch_modified_files, commit_msg)
+    issue_id = state.get('issue_id', 'unknown')
+    remote_agent.logger = logger
+    remote_agent.commit_changes(
+        worktree_path, 
+        patch_modified_files, 
+        type="fix", 
+        scope="resolv", 
+        description=f"auto-resolved issue {issue_id}",
+        footer=f"Closes: #{issue_id}"
+    )
 
     # Push branch (best-effort; worktree may have no changes)
     remote_agent.push_branch(worktree_path, "origin", branch_name)

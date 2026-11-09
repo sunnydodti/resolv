@@ -82,13 +82,19 @@ class RemoteGitSubAgent(SubAgent):
                 self.logger.error(f"Push failed: {stderr}")
             raise e
 
-    def commit_changes(self, repo_path: str, files: List[str], message: str):
-        """Commit changes in the repository.
+    def commit_changes(self, repo_path: str, files: List[str], type: str, scope: str, description: str, body: str = "", footer: str = ""):
+        """Commit changes using Conventional Commits format.
 
         Uses `git -C <repo_path>` instead of --git-dir/--work-tree because
         git worktrees store .git as a file, and --git-dir pointing to that
         file does not resolve correctly on Windows.
         """
+        message = f"{type}({scope}): {description}"
+        if body:
+            message += f"\n\n{body}"
+        if footer:
+            message += f"\n\n{footer}"
+
         self.logger.info(f"Committing {len(files)} file(s): {message}")
         repo = Path(repo_path)
         if not repo.exists():

@@ -1,0 +1,37 @@
+# Commit Message Rules
+
+## Format
+All commit messages must follow the Conventional Commit standard:
+
+<type>[scope]: <description>
+
+## Allowed Types
+- `feat` - A new feature
+- `fix` - A bug fix
+- `refactor` - A code change that neither fixes a bug nor adds a feature
+- `perf` - A code change that improves performance
+- `docs` - Documentation only changes
+- `test` - Adding missing tests or correcting existing tests
+- `chore` - Changes to the build process or auxiliary tools
+
+## Required Scopes
+The following scopes are required for changes to specific areas:
+- `agents` - Changes related to agent functionality
+- `core` - Changes related to core system functionality
+- `config` - Changes related to configuration
+
+## Subject Line
+- Maximum 50 characters
+- Must be lowercase
+- No trailing period
+
+## Body
+- Each line must be wrapped at 72 characters
+- Explain what and why, not how
+
+## Footer
+- Must include an issue reference in the format: `Closes #123`
+- The footer is mandatory
+
+## Automation
+Always use `scripts/generate_commit.py` when staging changes to ensure commit messages follow these standards.

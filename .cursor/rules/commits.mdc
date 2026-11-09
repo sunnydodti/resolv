@@ -1,0 +1,68 @@
+# Conventional Commit Standards
+
+## Commit Message Format
+
+<type>[scope]: <description>
+
+## Allowed Types
+
+- `feat`: A new feature
+- `fix`: A bug fix
+- `docs`: Documentation only changes
+- `style`: Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc)
+- `refactor`: A code change that neither fixes a bug nor adds a feature
+- `perf`: A code change that improves performance
+- `test`: Adding missing tests or correcting existing tests
+- `build`: Changes that affect the build system or external dependencies
+- `ci`: Changes to CI configuration files and scripts
+- `chore`: Other changes that don't modify src or test files
+- `revert`: Reverts a previous commit
+
+## Required Scopes
+
+The following directory prefixes require a corresponding scope:
+
+| Directory | Required Scope |
+|-----------|----------------|
+| `agents/` | `agents` |
+| `core/` | `core` |
+| `config/` | `config` |
+
+## Character Limits
+
+- **Subject line**: Maximum 50 characters
+- **Body lines**: Maximum 72 characters per line
+
+## Footer
+
+A mandatory footer is required with an issue reference:
+
+```
+Fixes #<issue-number>
+```
+
+or
+
+```
+Closes #<issue-number>
+```
+
+## AI-Assisted Commit Drafting
+
+Use `scripts/generate_commit.py` for AI-assisted commit drafting.
+
+## Examples
+
+```
+feat[agents]: add agent registration endpoint
+
+Implements the POST /agents endpoint for registering new agents in the system.
+
+Fixes #123
+```
+
+```
+fix[core]: resolve memory leak in connection pool
+
+Closes #456
+```

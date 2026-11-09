@@ -1,0 +1,100 @@
+# Cline Rules: Conventional Commit Standards
+
+## Commit Message Format
+
+All commits must follow the Conventional Commits specification:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+## Allowed Commit Types
+
+The following types are permitted:
+
+- `feat`: A new feature for the user
+- `fix`: A bug fix for the user
+- `docs`: Documentation only changes
+- `style`: Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc.)
+- `refactor`: A code change that neither fixes a bug nor adds a feature
+- `test`: Adding missing tests or correcting existing tests
+- `chore`: Changes to the build process or auxiliary tools and libraries
+- `perf`: A code change that improves performance
+- `ci`: Changes to CI configuration files and scripts
+- `build`: Changes that affect the build system or external dependencies
+- `revert`: Reverts a previous commit
+
+## Required Scopes
+
+A scope is required for all commit types. The scope should indicate the area of the codebase affected. Examples include:
+
+- `api`, `cli`, `ui`, `core`, `config`, `deps`, `docs`, `tests`, `ci`, `build`
+
+## Character Limits
+
+- **Header** (type(scope): description): Maximum 72 characters
+- **Body** lines: Maximum 72 characters per line
+- **Footer** lines: Maximum 72 characters per line
+
+## Footer Requirements
+
+Footers are required for:
+
+1. **Breaking Changes**: Must include `BREAKING CHANGE:` followed by a description of the change and migration instructions.
+2. **Issue References**: Must reference related issues using `Closes #<issue-number>` or `Refs #<issue-number>`.
+3. **Pull Request References**: May reference related PRs using `PR #<pr-number>`.
+
+Example footer:
+
+```
+BREAKING CHANGE: The `api` endpoint now requires authentication. Update all clients to include an API token.
+
+Closes #123
+Refs #456
+```
+
+## Commit Generation
+
+Use the provided script to generate properly formatted commit messages:
+
+```
+python scripts/generate_commit.py
+```
+
+This script will prompt for the commit type, scope, description, optional body, and footer, ensuring compliance with these standards.
+
+## Examples
+
+Valid commit messages:
+
+```
+feat(api): add user authentication endpoint
+
+fix(ui): resolve navigation menu overlap on mobile
+
+docs(readme): update installation instructions
+
+refactor(core): extract validation logic into separate module
+
+chore(deps): update lodash to version 4.17.21
+
+BREAKING CHANGE: The `config` object structure has changed. See migration guide for details.
+
+Closes #789
+```
+
+Invalid commit messages:
+
+```
+Added new feature (no type or scope)
+fix: missing scope
+feat(api): description exceeds seventy-two characters limit which is not allowed
+```
+
+## Enforcement
+
+All commits must pass validation via `scripts/generate_commit.py` or an equivalent pre-commit hook before being pushed to the repository.
